@@ -1,10 +1,14 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.Collections;
+using System.ComponentModel;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Data;
 using System.Windows.Interop;
 using System.Windows.Media.Imaging;
 
@@ -15,6 +19,8 @@ public partial class MainWindow : Window
     private const int WM_CLIPBOARDUPDATE = 0x031D;
     private const int ERROR_NOT_LOCKED = 158;
     private const int BYTES_PER_ROW = 16;
+    private const string PreferencesFileName = "preferences.json";
+    private const string DefaultSortProperty = nameof(ClipboardFormatItem.Ordinal);
 
     private static readonly Dictionary<uint, string> WellKnownFormats = new()
     {
@@ -58,12 +64,19 @@ public partial class MainWindow : Window
     private double _fitScale = 1.0;
     private bool _ignoreZoomChanges;
     private bool _isUiReady;
+    private string _currentSortProperty = DefaultSortProperty;
+    private ListSortDirection _currentSortDirection = ListSortDirection.Ascending;
+    private List<FormatColumnPreference> _storedColumnPreferences = [];
 
     public MainWindow()
     {
         InitializeComponent();
         _isUiReady = true;
         FormatListBox.ItemsSource = _formats;
+        LoadSortPreferences();
+        ApplyFormatColumnPreferences();
+        FormatListBox.AddHandler(GridViewColumnHeader.ClickEvent, new RoutedEventHandler(FormatListBox_OnColumnHeaderClick));
+        ApplyFormatSort();
         InitializePreviewState();
     }
 
@@ -90,6 +103,7 @@ public partial class MainWindow : Window
             _hwndSource = null;
         }
 
+        SaveSortPreferences();
         base.OnClosed(e);
     }
 
@@ -194,6 +208,7 @@ public partial class MainWindow : Window
         try
         {
             uint format = 0;
+            var ordinal = 1;
             while (true)
             {
                 format = NativeMethods.EnumClipboardFormats(format);
@@ -203,11 +218,12 @@ public partial class MainWindow : Window
                 }
 
                 var name = GetFormatDisplayName(format);
-                var sizeText = TryGetClipboardDataSize(format, out var sizeBytes)
-                    ? $"{sizeBytes:N0} bytes"
-                    : "size unavailable";
+                var hasSize = TryGetClipboardDataSize(format, out var sizeBytes);
+                var contentSizeValue = hasSize ? (long)sizeBytes : -1L;
+                var contentSize = hasSize ? sizeBytes.ToString("N0") : "n/a";
 
-                results.Add(new ClipboardFormatItem((int)format, name, $"{format}: {name} ({sizeText})"));
+                results.Add(new ClipboardFormatItem(ordinal, (int)format, format, name, contentSize, contentSizeValue));
+                ordinal++;
             }
         }
         finally
@@ -674,13 +690,318 @@ public partial class MainWindow : Window
         return "Unknown";
     }
 
-    private sealed class ClipboardFormatItem(int id, string name, string displayName)
+    private sealed class ClipboardFormatItem(int ordinal, int id, uint formatNumberValue, string name, string contentSize, long contentSizeValue)
     {
+        public int Ordinal { get; } = ordinal;
         public int Id { get; } = id;
+        public uint FormatNumberValue { get; } = formatNumberValue;
+        public string FormatNumber => FormatNumberValue.ToString("D");
         public string Name { get; } = name;
-        public string DisplayName { get; } = displayName;
+        public string ContentSize { get; } = contentSize;
+        public long ContentSizeValue { get; } = contentSizeValue;
     }
 
+    private void FormatListBox_OnColumnHeaderClick(object sender, RoutedEventArgs e)
+    {
+        if (e.OriginalSource is not GridViewColumnHeader header || header.Role == GridViewColumnHeaderRole.Padding)
+        {
+            return;
+        }
+
+        if (header.Tag is not string requestedProperty || !IsSupportedSortProperty(requestedProperty))
+        {
+            return;
+        }
+
+        if (string.Equals(_currentSortProperty, requestedProperty, StringComparison.Ordinal))
+        {
+            _currentSortDirection = _currentSortDirection == ListSortDirection.Ascending
+                ? ListSortDirection.Descending
+                : ListSortDirection.Ascending;
+        }
+        else
+        {
+            _currentSortProperty = requestedProperty;
+            _currentSortDirection = ListSortDirection.Ascending;
+        }
+
+        ApplyFormatSort();
+        SaveSortPreferences();
+    }
+
+    private void ApplyFormatSort()
+    {
+        var view = CollectionViewSource.GetDefaultView(FormatListBox.ItemsSource);
+        if (view == null)
+        {
+            return;
+        }
+
+        using (view.DeferRefresh())
+        {
+            view.SortDescriptions.Clear();
+            view.SortDescriptions.Add(new SortDescription(_currentSortProperty, _currentSortDirection));
+        }
+
+        UpdateSortIndicators();
+    }
+
+    private static bool IsSupportedSortProperty(string propertyName)
+    {
+        return propertyName is nameof(ClipboardFormatItem.Ordinal)
+            or nameof(ClipboardFormatItem.FormatNumberValue)
+            or nameof(ClipboardFormatItem.Name)
+            or nameof(ClipboardFormatItem.ContentSizeValue);
+    }
+
+    private static bool IsSupportedColumnKey(string key)
+    {
+        return IsSupportedSortProperty(key);
+    }
+
+    private void LoadSortPreferences()
+    {
+        _storedColumnPreferences = [];
+
+        try
+        {
+            var path = GetPreferencesFilePath();
+            if (!File.Exists(path))
+            {
+                return;
+            }
+
+            var json = File.ReadAllText(path);
+            var preferences = JsonSerializer.Deserialize<UserPreferences>(json);
+            if (preferences == null)
+            {
+                return;
+            }
+
+            if (!string.IsNullOrWhiteSpace(preferences.SortProperty) && IsSupportedSortProperty(preferences.SortProperty))
+            {
+                _currentSortProperty = preferences.SortProperty;
+            }
+
+            if (Enum.TryParse<ListSortDirection>(preferences.SortDirection, ignoreCase: true, out var direction))
+            {
+                _currentSortDirection = direction;
+            }
+
+            if (preferences.FormatColumns != null)
+            {
+                foreach (var column in preferences.FormatColumns)
+                {
+                    if (column == null || string.IsNullOrWhiteSpace(column.Key) || !IsSupportedColumnKey(column.Key))
+                    {
+                        continue;
+                    }
+
+                    _storedColumnPreferences.Add(new FormatColumnPreference
+                    {
+                        Key = column.Key,
+                        Width = column.Width
+                    });
+                }
+            }
+        }
+        catch
+        {
+            _currentSortProperty = DefaultSortProperty;
+            _currentSortDirection = ListSortDirection.Ascending;
+            _storedColumnPreferences = [];
+        }
+    }
+
+    private void SaveSortPreferences()
+    {
+        try
+        {
+            var path = GetPreferencesFilePath();
+            var directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            var preferences = new UserPreferences
+            {
+                SortProperty = _currentSortProperty,
+                SortDirection = _currentSortDirection.ToString(),
+                FormatColumns = CaptureFormatColumnPreferences()
+            };
+
+            var json = JsonSerializer.Serialize(preferences, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(path, json);
+        }
+        catch
+        {
+            // Ignore preference persistence failures.
+        }
+    }
+
+    private void ApplyFormatColumnPreferences()
+    {
+        var gridView = GetFormatGridView();
+        if (gridView == null || _storedColumnPreferences.Count == 0)
+        {
+            return;
+        }
+
+        var columnsByKey = new Dictionary<string, GridViewColumn>(StringComparer.Ordinal);
+        foreach (var column in gridView.Columns)
+        {
+            if (TryGetColumnKey(column, out var key) && !columnsByKey.ContainsKey(key))
+            {
+                columnsByKey[key] = column;
+            }
+        }
+
+        var orderedColumns = new List<GridViewColumn>();
+        foreach (var preference in _storedColumnPreferences)
+        {
+            if (!columnsByKey.TryGetValue(preference.Key, out var column))
+            {
+                continue;
+            }
+
+            if (preference.Width.HasValue && preference.Width.Value > 0)
+            {
+                column.Width = preference.Width.Value;
+            }
+
+            orderedColumns.Add(column);
+            columnsByKey.Remove(preference.Key);
+        }
+
+        foreach (var column in gridView.Columns)
+        {
+            if (!TryGetColumnKey(column, out var key))
+            {
+                continue;
+            }
+
+            if (columnsByKey.Remove(key))
+            {
+                orderedColumns.Add(column);
+            }
+        }
+
+        if (orderedColumns.Count != gridView.Columns.Count)
+        {
+            return;
+        }
+
+        gridView.Columns.Clear();
+        foreach (var column in orderedColumns)
+        {
+            gridView.Columns.Add(column);
+        }
+    }
+
+    private List<FormatColumnPreference> CaptureFormatColumnPreferences()
+    {
+        var result = new List<FormatColumnPreference>();
+        var gridView = GetFormatGridView();
+        if (gridView == null)
+        {
+            return result;
+        }
+
+        foreach (var column in gridView.Columns)
+        {
+            if (!TryGetColumnKey(column, out var key) || !IsSupportedColumnKey(key))
+            {
+                continue;
+            }
+
+            result.Add(new FormatColumnPreference
+            {
+                Key = key,
+                Width = column.Width > 0 ? column.Width : null
+            });
+        }
+
+        return result;
+    }
+
+    private GridView? GetFormatGridView()
+    {
+        return FormatListBox.View as GridView;
+    }
+
+    private static bool TryGetColumnKey(GridViewColumn column, out string key)
+    {
+        key = string.Empty;
+
+        if (column.Header is not GridViewColumnHeader header || header.Tag is not string tag || string.IsNullOrWhiteSpace(tag))
+        {
+            return false;
+        }
+
+        key = tag;
+        return true;
+    }
+
+    private void UpdateSortIndicators()
+    {
+        OrdinalColumnHeader.Content = "#";
+        IdColumnHeader.Content = "ID";
+        FormatColumnHeader.Content = "Format";
+        SizeColumnHeader.Content = "Size";
+
+        var currentHeader = GetHeaderBySortProperty(_currentSortProperty);
+        if (currentHeader == null)
+        {
+            return;
+        }
+
+        var direction = _currentSortDirection == ListSortDirection.Ascending ? "↑" : "↓";
+        currentHeader.Content = $"{GetHeaderBaseTitle(_currentSortProperty)} {direction}";
+    }
+
+    private GridViewColumnHeader? GetHeaderBySortProperty(string propertyName)
+    {
+        return propertyName switch
+        {
+            nameof(ClipboardFormatItem.Ordinal) => OrdinalColumnHeader,
+            nameof(ClipboardFormatItem.FormatNumberValue) => IdColumnHeader,
+            nameof(ClipboardFormatItem.Name) => FormatColumnHeader,
+            nameof(ClipboardFormatItem.ContentSizeValue) => SizeColumnHeader,
+            _ => null
+        };
+    }
+
+    private static string GetHeaderBaseTitle(string propertyName)
+    {
+        return propertyName switch
+        {
+            nameof(ClipboardFormatItem.Ordinal) => "#",
+            nameof(ClipboardFormatItem.FormatNumberValue) => "ID",
+            nameof(ClipboardFormatItem.Name) => "Format",
+            nameof(ClipboardFormatItem.ContentSizeValue) => "Size",
+            _ => propertyName
+        };
+    }
+
+    private static string GetPreferencesFilePath()
+    {
+        var appData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        return Path.Combine(appData, "Simply.ClipboardMonitor", PreferencesFileName);
+    }
+
+    private sealed class UserPreferences
+    {
+        public string? SortProperty { get; set; }
+        public string? SortDirection { get; set; }
+        public List<FormatColumnPreference>? FormatColumns { get; set; }
+    }
+
+    private sealed class FormatColumnPreference
+    {
+        public string Key { get; set; } = string.Empty;
+        public double? Width { get; set; }
+    }
     private sealed class HexRowCollection(byte[] data) : IList
     {
         private readonly Dictionary<int, HexRow> _cache = [];
@@ -796,3 +1117,7 @@ public partial class MainWindow : Window
         internal static extern uint GetOEMCP();
     }
 }
+
+
+
+

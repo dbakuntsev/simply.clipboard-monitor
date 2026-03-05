@@ -31,7 +31,7 @@ jobs:
           release_name="Simply.ClipboardMonitor-$tag-${{ matrix.target }}"
 
           # Build everything
-          dotnet publish Simply.ClipboardMonitor/Simply.ClipboardMonitor.csproj --framework net8.0 --runtime "${{ matrix.target }}" -c Release -o "$release_name"
+          dotnet publish Simply.ClipboardMonitor/Simply.ClipboardMonitor.csproj --framework net8.0-windows --runtime "${{ matrix.target }}" -c Release -o "$release_name"
 
           # Pack files
           if [ "${{ matrix.target }}" == "win-x64" ]; then

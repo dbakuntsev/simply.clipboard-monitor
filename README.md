@@ -95,7 +95,7 @@ When you select a format:
 ## Build and Run
 
 1. Ensure you have the .NET 8 SDK installed on your machine (`dotnet --list-sdks`).
-2. 1. Clone the repository.
+2. Clone the repository.
 3. Navigate to the root directory of the repository (where `Simply.ClipboardMonitor.sln` file is located).
 4. For debug builds:
 	* Execute `dotnet run`.

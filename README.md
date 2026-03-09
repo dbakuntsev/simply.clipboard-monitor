@@ -8,6 +8,8 @@ It shows:
 - Decoded text preview (for text-like formats).
 - Image preview (for image-like formats).
 
+![Screenshot](.github/screenshots/demo.jpg)
+
 ## Download Binaries
 
 Pre-built portable binaries are available from the [GitHub releases page](../../releases/latest).

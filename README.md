@@ -8,7 +8,8 @@ It shows:
 - Decoded text preview (for text-like formats).
 - Image preview (for image-like formats).
 
-![Screenshot](.github/screenshots/demo.jpg)
+![Screenshot](.github/screenshots/demo1.png)
+![Screenshot](.github/screenshots/demo2.png)
 
 ## Download Binaries
 

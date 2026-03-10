@@ -9,6 +9,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Data;
+using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media.Imaging;
 
@@ -21,6 +22,10 @@ public partial class MainWindow : Window
     private const int BYTES_PER_ROW = 16;
     private const string PreferencesFileName = "preferences.json";
     private const string DefaultSortProperty = nameof(ClipboardFormatItem.Ordinal);
+
+    public static readonly RoutedUICommand RefreshClipboardCommand = new(
+        "Refresh", "RefreshClipboard", typeof(MainWindow),
+        new InputGestureCollection { new KeyGesture(Key.F5) });
 
     private static readonly Dictionary<uint, string> WellKnownFormats = new()
     {
@@ -72,6 +77,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        CommandBindings.Add(new CommandBinding(RefreshClipboardCommand, RefreshClipboardCommand_Executed, RefreshClipboardCommand_CanExecute));
         _isUiReady = true;
         FormatListBox.ItemsSource = _formats;
         LoadPreferences();
@@ -701,6 +707,16 @@ public partial class MainWindow : Window
         StatusText.Text = _isMonitoring ? "Monitoring..." : "Ready";
     }
 
+    private void RefreshClipboardCommand_Executed(object sender, ExecutedRoutedEventArgs e)
+    {
+        RefreshFormats();
+    }
+
+    private void RefreshClipboardCommand_CanExecute(object sender, CanExecuteRoutedEventArgs e)
+    {
+        e.CanExecute = !_isMonitoring;
+    }
+
     private void MenuItemExit_Click(object sender, RoutedEventArgs e)
     {
         Close();
@@ -714,6 +730,8 @@ public partial class MainWindow : Window
     private void MenuItemClear_Click(object sender, RoutedEventArgs e)
     {
         Clipboard.Clear();
+        if (!_isMonitoring)
+            RefreshFormats();
     }
 
     private void MenuItemMonitorChanges_Click(object sender, RoutedEventArgs e)

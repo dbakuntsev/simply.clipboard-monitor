@@ -37,8 +37,8 @@ The app is designed as a clipboard debugging and inspection utility for software
 
 ## How It Works
 
-At runtime, the main window registers as a clipboard listener using `AddClipboardFormatListener`.  
-Whenever Windows sends `WM_CLIPBOARDUPDATE`, the app:
+At runtime, the main window registers as a clipboard listener using `AddClipboardFormatListener`.
+Whenever Windows sends `WM_CLIPBOARDUPDATE` and clipboard change monitoring is active, the app:
 
 1. Opens the clipboard (with retry).
 2. Enumerates available format IDs with `EnumClipboardFormats`.
@@ -52,6 +52,20 @@ When you select a format:
 2. It renders a lazy hex table (16 bytes per row).
 3. It attempts text decoding for text-like formats.
 4. It attempts image decoding for image-like formats.
+
+## Clipboard Monitoring
+
+Clipboard change monitoring is **enabled by default**. When active, the format list refreshes automatically every time the clipboard contents change.
+
+### Turning monitoring ON and OFF
+
+Use **Clipboard -> Monitor Changes** in the menu bar to toggle monitoring on or off. 
+
+The menu item displays a checkmark and the status bar at the bottom shows "Monitoring..." while monitoring is active.
+
+### Persisted preference
+
+The monitoring state is saved automatically when changed and restored on the next launch. The preference is stored in `%LOCALAPPDATA%\Simply.ClipboardMonitor\preferences.json`
 
 ## Preview Behavior
 
@@ -89,8 +103,11 @@ When you select a format:
 
 - `Simply.ClipboardMonitor.sln` - solution
 - `Simply.ClipboardMonitor/Simply.ClipboardMonitor.csproj` - app project
-- `Simply.ClipboardMonitor/MainWindow.xaml` - UI layout
-- `Simply.ClipboardMonitor/MainWindow.xaml.cs` - core logic (clipboard listener, parsing, previews)
+- `Simply.ClipboardMonitor/MainWindow.xaml` - main window UI layout
+- `Simply.ClipboardMonitor/MainWindow.xaml.cs` - core logic (clipboard listener, parsing, previews, preferences)
+- `Simply.ClipboardMonitor/AboutDialog.xaml` - About dialog UI layout
+- `Simply.ClipboardMonitor/AboutDialog.xaml.cs` - About dialog logic
+- `Simply.ClipboardMonitor/ShellHelper.cs` - helper for opening URLs in the default browser
 
 ## Build and Run
 

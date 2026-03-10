@@ -67,13 +67,16 @@ public partial class MainWindow : Window
     private string _currentSortProperty = DefaultSortProperty;
     private ListSortDirection _currentSortDirection = ListSortDirection.Ascending;
     private List<FormatColumnPreference> _storedColumnPreferences = [];
+    private bool _isMonitoring;
 
     public MainWindow()
     {
         InitializeComponent();
         _isUiReady = true;
         FormatListBox.ItemsSource = _formats;
-        LoadSortPreferences();
+        LoadPreferences();
+        MenuItemMonitorChanges.IsChecked = _isMonitoring;
+        UpdateStatusBar();
         ApplyFormatColumnPreferences();
         FormatListBox.AddHandler(GridViewColumnHeader.ClickEvent, new RoutedEventHandler(FormatListBox_OnColumnHeaderClick));
         ApplyFormatSort();
@@ -103,7 +106,7 @@ public partial class MainWindow : Window
             _hwndSource = null;
         }
 
-        SaveSortPreferences();
+        SavePreferences();
         base.OnClosed(e);
     }
 
@@ -111,7 +114,10 @@ public partial class MainWindow : Window
     {
         if (msg == WM_CLIPBOARDUPDATE)
         {
-            RefreshFormats();
+            if (_isMonitoring)
+            {
+                RefreshFormats();
+            }
             handled = true;
         }
 
@@ -690,6 +696,48 @@ public partial class MainWindow : Window
         return "Unknown";
     }
 
+    private void UpdateStatusBar()
+    {
+        StatusText.Text = _isMonitoring ? "Monitoring..." : "Ready";
+    }
+
+    private void MenuItemExit_Click(object sender, RoutedEventArgs e)
+    {
+        Close();
+    }
+
+    private void ClipboardMenu_SubmenuOpened(object sender, RoutedEventArgs e)
+    {
+        MenuItemClear.IsEnabled = NativeMethods.CountClipboardFormats() > 0;
+    }
+
+    private void MenuItemClear_Click(object sender, RoutedEventArgs e)
+    {
+        Clipboard.Clear();
+    }
+
+    private void MenuItemMonitorChanges_Click(object sender, RoutedEventArgs e)
+    {
+        _isMonitoring = MenuItemMonitorChanges.IsChecked;
+        UpdateStatusBar();
+        SavePreferences();
+
+        if (_isMonitoring)
+        {
+            RefreshFormats();
+        }
+    }
+
+    private void MenuItemSubmitFeedback_Click(object sender, RoutedEventArgs e)
+    {
+        ShellHelper.OpenUrl("https://github.com/dbakuntsev/simply.clipboard-monitor/issues");
+    }
+
+    private void MenuItemAbout_Click(object sender, RoutedEventArgs e)
+    {
+        new AboutDialog { Owner = this }.ShowDialog();
+    }
+
     private sealed class ClipboardFormatItem(int ordinal, int id, uint formatNumberValue, string name, string contentSize, long contentSizeValue)
     {
         public int Ordinal { get; } = ordinal;
@@ -726,7 +774,7 @@ public partial class MainWindow : Window
         }
 
         ApplyFormatSort();
-        SaveSortPreferences();
+        SavePreferences();
     }
 
     private void ApplyFormatSort()
@@ -759,7 +807,7 @@ public partial class MainWindow : Window
         return IsSupportedSortProperty(key);
     }
 
-    private void LoadSortPreferences()
+    private void LoadPreferences()
     {
         _storedColumnPreferences = [];
 
@@ -804,16 +852,19 @@ public partial class MainWindow : Window
                     });
                 }
             }
+
+            _isMonitoring = preferences.MonitorChanges;
         }
         catch
         {
             _currentSortProperty = DefaultSortProperty;
             _currentSortDirection = ListSortDirection.Ascending;
             _storedColumnPreferences = [];
+            _isMonitoring = true;
         }
     }
 
-    private void SaveSortPreferences()
+    private void SavePreferences()
     {
         try
         {
@@ -828,7 +879,8 @@ public partial class MainWindow : Window
             {
                 SortProperty = _currentSortProperty,
                 SortDirection = _currentSortDirection.ToString(),
-                FormatColumns = CaptureFormatColumnPreferences()
+                FormatColumns = CaptureFormatColumnPreferences(),
+                MonitorChanges = _isMonitoring
             };
 
             var json = JsonSerializer.Serialize(preferences, new JsonSerializerOptions { WriteIndented = true });
@@ -995,6 +1047,7 @@ public partial class MainWindow : Window
         public string? SortProperty { get; set; }
         public string? SortDirection { get; set; }
         public List<FormatColumnPreference>? FormatColumns { get; set; }
+        public bool MonitorChanges { get; set; } = true;
     }
 
     private sealed class FormatColumnPreference
@@ -1094,6 +1147,9 @@ public partial class MainWindow : Window
 
         [DllImport("user32.dll", SetLastError = true)]
         internal static extern bool CloseClipboard();
+
+        [DllImport("user32.dll")]
+        internal static extern int CountClipboardFormats();
 
         [DllImport("user32.dll", SetLastError = true)]
         internal static extern uint EnumClipboardFormats(uint format);

@@ -1,4 +1,4 @@
-﻿<Window x:Class="Simply.ClipboardMonitor.MainWindow"
+<Window x:Class="Simply.ClipboardMonitor.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
@@ -6,169 +6,194 @@
         mc:Ignorable="d"
         Title="Simply Clipboard Monitor" Height="700" Width="1080"
         MinHeight="460" MinWidth="800">
-    <Grid Margin="12">
-        <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="320" />
-            <ColumnDefinition Width="12" />
-            <ColumnDefinition Width="*" />
-        </Grid.ColumnDefinitions>
+    <DockPanel>
+        <Menu DockPanel.Dock="Top">
+            <MenuItem Header="_File">
+                <MenuItem Header="E_xit" Click="MenuItemExit_Click" />
+            </MenuItem>
+            <MenuItem Header="_Clipboard" SubmenuOpened="ClipboardMenu_SubmenuOpened">
+                <MenuItem x:Name="MenuItemClear" Header="C_lear" Click="MenuItemClear_Click" />
+                <MenuItem x:Name="MenuItemMonitorChanges"
+                          Header="_Monitor Changes"
+                          IsCheckable="True"
+                          Click="MenuItemMonitorChanges_Click" />
+            </MenuItem>
+            <MenuItem Header="_Help">
+                <MenuItem Header="Submit _Feedback" Click="MenuItemSubmitFeedback_Click" />
+                <MenuItem Header="_About" Click="MenuItemAbout_Click" />
+            </MenuItem>
+        </Menu>
 
-        <GroupBox Header="Clipboard Formats" Grid.Column="0">
-            <ListView x:Name="FormatListBox"
-                      SelectionChanged="FormatListBox_OnSelectionChanged"
-                      ScrollViewer.HorizontalScrollBarVisibility="Auto"
-                      ScrollViewer.VerticalScrollBarVisibility="Auto">
-                <ListView.View>
-                    <GridView>
-                        <GridViewColumn Width="28" DisplayMemberBinding="{Binding Ordinal}">
-                            <GridViewColumn.Header>
-                                <GridViewColumnHeader x:Name="OrdinalColumnHeader" Content="#" Tag="Ordinal" />
-                            </GridViewColumn.Header>
-                        </GridViewColumn>
-                        <GridViewColumn Width="44" DisplayMemberBinding="{Binding FormatNumber}">
-                            <GridViewColumn.Header>
-                                <GridViewColumnHeader x:Name="IdColumnHeader" Content="ID" Tag="FormatNumberValue" />
-                            </GridViewColumn.Header>
-                        </GridViewColumn>
-                        <GridViewColumn Width="140">
-                            <GridViewColumn.Header>
-                                <GridViewColumnHeader x:Name="FormatColumnHeader" Content="Format" Tag="Name" />
-                            </GridViewColumn.Header>
-                            <GridViewColumn.CellTemplate>
-                                <DataTemplate>
-                                    <TextBlock Text="{Binding Name}"
-                                               TextTrimming="CharacterEllipsis"
-                                               ToolTip="{Binding Name}" />
-                                </DataTemplate>
-                            </GridViewColumn.CellTemplate>
-                        </GridViewColumn>
-                        <GridViewColumn Width="76">
-                            <GridViewColumn.Header>
-                                <GridViewColumnHeader x:Name="SizeColumnHeader" Content="Size" Tag="ContentSizeValue" />
-                            </GridViewColumn.Header>
-                            <GridViewColumn.CellTemplate>
-                                <DataTemplate>
-                                    <TextBlock Text="{Binding ContentSize}"
-                                               TextTrimming="CharacterEllipsis"
-                                               ToolTip="{Binding ContentSize}" />
-                                </DataTemplate>
-                            </GridViewColumn.CellTemplate>
-                        </GridViewColumn>
-                    </GridView>
-                </ListView.View>
-            </ListView>
-        </GroupBox>
+        <StatusBar DockPanel.Dock="Bottom">
+            <StatusBarItem>
+                <TextBlock x:Name="StatusText" />
+            </StatusBarItem>
+        </StatusBar>
 
-        <GroupBox Header="Selected Format Content" Grid.Column="2">
-            <TabControl x:Name="ContentTabControl">
-                <TabItem Header="Hex">
-                    <Grid Margin="8">
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="8" />
-                            <RowDefinition Height="*" />
-                        </Grid.RowDefinitions>
-                        <TextBlock x:Name="HexStatusTextBlock"
-                                   Foreground="DimGray"
-                                   Text="Select a clipboard format to preview." />
-                        <ListView x:Name="HexListView"
-                                  Grid.Row="2"
-                                  FontFamily="Consolas"
-                                  FontSize="13"
-                                  ScrollViewer.HorizontalScrollBarVisibility="Auto"
-                                  ScrollViewer.VerticalScrollBarVisibility="Auto"
-                                  ScrollViewer.CanContentScroll="True"
-                                  VirtualizingPanel.IsVirtualizing="True"
-                                  VirtualizingPanel.ScrollUnit="Item"
-                                  VirtualizingPanel.VirtualizationMode="Recycling">
-                            <ListView.View>
-                                <GridView AllowsColumnReorder="False">
-                                    <GridViewColumn Header="Offset" Width="90" DisplayMemberBinding="{Binding Offset}" />
-                                    <GridViewColumn Header="Hex" Width="380" DisplayMemberBinding="{Binding Hex}" />
-                                    <GridViewColumn Header="ASCII" Width="190" DisplayMemberBinding="{Binding Ascii}" />
-                                </GridView>
-                            </ListView.View>
-                        </ListView>
-                    </Grid>
-                </TabItem>
+        <Grid Margin="12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="320" />
+                <ColumnDefinition Width="12" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
 
-                <TabItem Header="Text">
-                    <Grid Margin="8">
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="8" />
-                            <RowDefinition Height="*" />
-                        </Grid.RowDefinitions>
-                        <TextBlock x:Name="TextStatusTextBlock"
-                                   Foreground="DimGray"
-                                   Text="Text preview unavailable for this format." />
-                        <TextBox x:Name="TextContentTextBox"
-                                 Grid.Row="2"
-                                 IsReadOnly="True"
-                                 FontFamily="Consolas"
-                                 FontSize="13"
-                                 VerticalScrollBarVisibility="Auto"
-                                 HorizontalScrollBarVisibility="Auto"
-                                 TextWrapping="NoWrap"
-                                 AcceptsReturn="True"
-                                 AcceptsTab="True" />
-                    </Grid>
-                </TabItem>
+            <GroupBox Header="Clipboard Formats" Grid.Column="0">
+                <ListView x:Name="FormatListBox"
+                          SelectionChanged="FormatListBox_OnSelectionChanged"
+                          ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                          ScrollViewer.VerticalScrollBarVisibility="Auto">
+                    <ListView.View>
+                        <GridView>
+                            <GridViewColumn Width="28" DisplayMemberBinding="{Binding Ordinal}">
+                                <GridViewColumn.Header>
+                                    <GridViewColumnHeader x:Name="OrdinalColumnHeader" Content="#" Tag="Ordinal" />
+                                </GridViewColumn.Header>
+                            </GridViewColumn>
+                            <GridViewColumn Width="44" DisplayMemberBinding="{Binding FormatNumber}">
+                                <GridViewColumn.Header>
+                                    <GridViewColumnHeader x:Name="IdColumnHeader" Content="ID" Tag="FormatNumberValue" />
+                                </GridViewColumn.Header>
+                            </GridViewColumn>
+                            <GridViewColumn Width="140">
+                                <GridViewColumn.Header>
+                                    <GridViewColumnHeader x:Name="FormatColumnHeader" Content="Format" Tag="Name" />
+                                </GridViewColumn.Header>
+                                <GridViewColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding Name}"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   ToolTip="{Binding Name}" />
+                                    </DataTemplate>
+                                </GridViewColumn.CellTemplate>
+                            </GridViewColumn>
+                            <GridViewColumn Width="76">
+                                <GridViewColumn.Header>
+                                    <GridViewColumnHeader x:Name="SizeColumnHeader" Content="Size" Tag="ContentSizeValue" />
+                                </GridViewColumn.Header>
+                                <GridViewColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding ContentSize}"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   ToolTip="{Binding ContentSize}" />
+                                    </DataTemplate>
+                                </GridViewColumn.CellTemplate>
+                            </GridViewColumn>
+                        </GridView>
+                    </ListView.View>
+                </ListView>
+            </GroupBox>
 
-                <TabItem Header="Image">
-                    <DockPanel Margin="8">
-                        <StackPanel DockPanel.Dock="Top"
-                                    Orientation="Horizontal"
-                                    Margin="0,0,0,8"
-                                    VerticalAlignment="Center">
-                            <TextBlock Text="Zoom:"
-                                       VerticalAlignment="Center"
-                                       Margin="0,0,8,0" />
-                            <Slider x:Name="ZoomSlider"
-                                    Minimum="0.25"
-                                    Maximum="8"
-                                    Value="1"
-                                    Width="220"
-                                    IsEnabled="False"
-                                    ValueChanged="ZoomSlider_OnValueChanged" />
-                            <TextBlock x:Name="ZoomValueTextBlock"
-                                       Text="100%"
-                                       Width="52"
-                                       Margin="8,0,0,0"
-                                       VerticalAlignment="Center" />
-                            <Button Content="Reset"
-                                    Margin="8,0,0,0"
-                                    Padding="10,2"
-                                    Click="ResetZoomButton_OnClick"
-                                    IsEnabled="{Binding IsEnabled, ElementName=ZoomSlider}" />
-                        </StackPanel>
-
-                        <Grid>
-                            <TextBlock x:Name="ImageStatusTextBlock"
+            <GroupBox Header="Selected Format Content" Grid.Column="2">
+                <TabControl x:Name="ContentTabControl">
+                    <TabItem Header="Hex">
+                        <Grid Margin="8">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="8" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+                            <TextBlock x:Name="HexStatusTextBlock"
                                        Foreground="DimGray"
-                                       HorizontalAlignment="Center"
-                                       VerticalAlignment="Center"
-                                       Text="Image preview unavailable for this format." />
-                            <ScrollViewer x:Name="ImageScrollViewer"
-                                          HorizontalScrollBarVisibility="Auto"
-                                          VerticalScrollBarVisibility="Auto"
-                                          SizeChanged="ImageScrollViewer_OnSizeChanged">
-                                <Grid>
-                                    <Image x:Name="ImagePreview"
+                                       Text="Select a clipboard format to preview." />
+                            <ListView x:Name="HexListView"
+                                      Grid.Row="2"
+                                      FontFamily="Consolas"
+                                      FontSize="13"
+                                      ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                      ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                      ScrollViewer.CanContentScroll="True"
+                                      VirtualizingPanel.IsVirtualizing="True"
+                                      VirtualizingPanel.ScrollUnit="Item"
+                                      VirtualizingPanel.VirtualizationMode="Recycling">
+                                <ListView.View>
+                                    <GridView AllowsColumnReorder="False">
+                                        <GridViewColumn Header="Offset" Width="90" DisplayMemberBinding="{Binding Offset}" />
+                                        <GridViewColumn Header="Hex" Width="380" DisplayMemberBinding="{Binding Hex}" />
+                                        <GridViewColumn Header="ASCII" Width="190" DisplayMemberBinding="{Binding Ascii}" />
+                                    </GridView>
+                                </ListView.View>
+                            </ListView>
+                        </Grid>
+                    </TabItem>
+
+                    <TabItem Header="Text">
+                        <Grid Margin="8">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="8" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+                            <TextBlock x:Name="TextStatusTextBlock"
+                                       Foreground="DimGray"
+                                       Text="Text preview unavailable for this format." />
+                            <TextBox x:Name="TextContentTextBox"
+                                     Grid.Row="2"
+                                     IsReadOnly="True"
+                                     FontFamily="Consolas"
+                                     FontSize="13"
+                                     VerticalScrollBarVisibility="Auto"
+                                     HorizontalScrollBarVisibility="Auto"
+                                     TextWrapping="NoWrap"
+                                     AcceptsReturn="True"
+                                     AcceptsTab="True" />
+                        </Grid>
+                    </TabItem>
+
+                    <TabItem Header="Image">
+                        <DockPanel Margin="8">
+                            <StackPanel DockPanel.Dock="Top"
+                                        Orientation="Horizontal"
+                                        Margin="0,0,0,8"
+                                        VerticalAlignment="Center">
+                                <TextBlock Text="Zoom:"
+                                           VerticalAlignment="Center"
+                                           Margin="0,0,8,0" />
+                                <Slider x:Name="ZoomSlider"
+                                        Minimum="0.25"
+                                        Maximum="8"
+                                        Value="1"
+                                        Width="220"
+                                        IsEnabled="False"
+                                        ValueChanged="ZoomSlider_OnValueChanged" />
+                                <TextBlock x:Name="ZoomValueTextBlock"
+                                           Text="100%"
+                                           Width="52"
+                                           Margin="8,0,0,0"
+                                           VerticalAlignment="Center" />
+                                <Button Content="Reset"
+                                        Margin="8,0,0,0"
+                                        Padding="10,2"
+                                        Click="ResetZoomButton_OnClick"
+                                        IsEnabled="{Binding IsEnabled, ElementName=ZoomSlider}" />
+                            </StackPanel>
+
+                            <Grid>
+                                <TextBlock x:Name="ImageStatusTextBlock"
+                                           Foreground="DimGray"
                                            HorizontalAlignment="Center"
                                            VerticalAlignment="Center"
-                                           Stretch="None"
-                                           SnapsToDevicePixels="True">
-                                        <Image.RenderTransform>
-                                            <ScaleTransform x:Name="ImageScaleTransform" ScaleX="1" ScaleY="1" />
-                                        </Image.RenderTransform>
-                                    </Image>
-                                </Grid>
-                            </ScrollViewer>
-                        </Grid>
-                    </DockPanel>
-                </TabItem>
-            </TabControl>
-        </GroupBox>
-    </Grid>
+                                           Text="Image preview unavailable for this format." />
+                                <ScrollViewer x:Name="ImageScrollViewer"
+                                              HorizontalScrollBarVisibility="Auto"
+                                              VerticalScrollBarVisibility="Auto"
+                                              SizeChanged="ImageScrollViewer_OnSizeChanged">
+                                    <Grid>
+                                        <Image x:Name="ImagePreview"
+                                               HorizontalAlignment="Center"
+                                               VerticalAlignment="Center"
+                                               Stretch="None"
+                                               SnapsToDevicePixels="True">
+                                            <Image.RenderTransform>
+                                                <ScaleTransform x:Name="ImageScaleTransform" ScaleX="1" ScaleY="1" />
+                                            </Image.RenderTransform>
+                                        </Image>
+                                    </Grid>
+                                </ScrollViewer>
+                            </Grid>
+                        </DockPanel>
+                    </TabItem>
+                </TabControl>
+            </GroupBox>
+        </Grid>
+    </DockPanel>
 </Window>

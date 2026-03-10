@@ -154,12 +154,20 @@ public partial class MainWindow : Window
 
     private void FormatListBox_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        InitializePreviewState();
-
         if (FormatListBox.SelectedItem is not ClipboardFormatItem item)
         {
             return;
         }
+
+        ContentTabControl.Visibility = Visibility.Visible;
+        NoSelectionPanel.Visibility = Visibility.Collapsed;
+        TextTabItem.IsEnabled = IsTextCompatible((uint)item.Id, item.Name);
+        ImageTabItem.IsEnabled = IsImageCompatible((uint)item.Id, item.Name);
+
+        if (!TextTabItem.IsEnabled && ContentTabControl.SelectedItem == TextTabItem)
+            ContentTabControl.SelectedItem = HexTabItem;
+        if (!ImageTabItem.IsEnabled && ContentTabControl.SelectedItem == ImageTabItem)
+            ContentTabControl.SelectedItem = HexTabItem;
 
         byte[]? bytes = null;
         string hexFailureMessage = "Clipboard data is unavailable.";
@@ -272,16 +280,7 @@ public partial class MainWindow : Window
 
     private static bool TryDecodeTextContent(uint formatId, string formatName, byte[] bytes, out string text, out string failureMessage)
     {
-        var normalized = formatName.ToLowerInvariant();
-        var isTextFormat = formatId is 1 or 7 or 13 ||
-                           normalized.Contains("text", StringComparison.Ordinal) ||
-                           normalized.Contains("html", StringComparison.Ordinal) ||
-                           normalized.Contains("rtf", StringComparison.Ordinal) ||
-                           normalized.Contains("xml", StringComparison.Ordinal) ||
-                           normalized.Contains("json", StringComparison.Ordinal) ||
-                           normalized.Contains("csv", StringComparison.Ordinal);
-
-        if (!isTextFormat)
+        if (!IsTextCompatible(formatId, formatName))
         {
             text = string.Empty;
             failureMessage = "Text preview unavailable for this format.";
@@ -373,17 +372,7 @@ public partial class MainWindow : Window
     private static bool TryCreateImagePreview(uint formatId, string formatName, byte[] bytes, out BitmapSource? image, out string failureMessage)
     {
         image = null;
-        var normalized = formatName.ToLowerInvariant();
-        var isImageCandidate = formatId is 8 or 17 ||
-                               normalized.Contains("png", StringComparison.Ordinal) ||
-                               normalized.Contains("jpeg", StringComparison.Ordinal) ||
-                               normalized.Contains("jpg", StringComparison.Ordinal) ||
-                               normalized.Contains("gif", StringComparison.Ordinal) ||
-                               normalized.Contains("dib", StringComparison.Ordinal) ||
-                               normalized.Contains("bitmap", StringComparison.Ordinal) ||
-                               normalized.Contains("image", StringComparison.Ordinal);
-
-        if (!isImageCandidate)
+        if (!IsImageCompatible(formatId, formatName))
         {
             failureMessage = "Image preview unavailable for this format.";
             return false;
@@ -419,6 +408,31 @@ public partial class MainWindow : Window
             failureMessage = "Failed to decode image preview for this format.";
             return false;
         }
+    }
+
+    private static bool IsTextCompatible(uint formatId, string formatName)
+    {
+        var normalized = formatName.ToLowerInvariant();
+        return formatId is 1 or 7 or 13 ||
+               normalized.Contains("text", StringComparison.Ordinal) ||
+               normalized.Contains("html", StringComparison.Ordinal) ||
+               normalized.Contains("rtf", StringComparison.Ordinal) ||
+               normalized.Contains("xml", StringComparison.Ordinal) ||
+               normalized.Contains("json", StringComparison.Ordinal) ||
+               normalized.Contains("csv", StringComparison.Ordinal);
+    }
+
+    private static bool IsImageCompatible(uint formatId, string formatName)
+    {
+        var normalized = formatName.ToLowerInvariant();
+        return formatId is 8 or 17 ||
+               normalized.Contains("png", StringComparison.Ordinal) ||
+               normalized.Contains("jpeg", StringComparison.Ordinal) ||
+               normalized.Contains("jpg", StringComparison.Ordinal) ||
+               normalized.Contains("gif", StringComparison.Ordinal) ||
+               normalized.Contains("dib", StringComparison.Ordinal) ||
+               normalized.Contains("bitmap", StringComparison.Ordinal) ||
+               normalized.Contains("image", StringComparison.Ordinal);
     }
 
     private static BitmapSource CreateBitmapFromEncodedImage(byte[] bytes)
@@ -491,6 +505,8 @@ public partial class MainWindow : Window
         ImagePreview.Source = image;
         ImageStatusTextBlock.Text = string.Empty;
         ZoomSlider.IsEnabled = true;
+        ImageDimensionsTextBlock.Text = $"{image.PixelWidth}px x {image.PixelHeight}px";
+        ImageDimensionsTextBlock.Visibility = Visibility.Visible;
         SetZoomValue(1);
         UpdateFitScale();
     }
@@ -500,6 +516,7 @@ public partial class MainWindow : Window
         ImagePreview.Source = null;
         ImageStatusTextBlock.Text = message;
         ZoomSlider.IsEnabled = false;
+        ImageDimensionsTextBlock.Visibility = Visibility.Collapsed;
         SetZoomValue(1);
         ApplyImageScale(1);
     }
@@ -515,6 +532,11 @@ public partial class MainWindow : Window
         SetHexPreviewUnavailable("Select a clipboard format to preview.");
         SetTextPreviewUnavailable("Text preview unavailable for this format.");
         SetImagePreviewUnavailable("Image preview unavailable for this format.");
+        TextTabItem.IsEnabled = true;
+        ImageTabItem.IsEnabled = true;
+        ContentTabControl.SelectedIndex = 0;
+        ContentTabControl.Visibility = Visibility.Collapsed;
+        NoSelectionPanel.Visibility = Visibility.Visible;
     }
 
     private void ZoomSlider_OnValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)

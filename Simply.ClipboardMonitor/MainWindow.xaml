@@ -86,8 +86,17 @@
             </GroupBox>
 
             <GroupBox Header="Selected Format Content" Grid.Column="2">
-                <TabControl x:Name="ContentTabControl">
-                    <TabItem Header="Hex">
+                <Grid>
+                    <TextBlock x:Name="NoSelectionPanel"
+                               Text="Select a clipboard format from the list to see the hex dump and format-specific preview"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               TextAlignment="Center"
+                               TextWrapping="Wrap"
+                               Foreground="DimGray"
+                               Margin="20" />
+                    <TabControl x:Name="ContentTabControl" Visibility="Collapsed">
+                    <TabItem x:Name="HexTabItem" Header="Hex">
                         <Grid Margin="8">
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
@@ -118,7 +127,7 @@
                         </Grid>
                     </TabItem>
 
-                    <TabItem Header="Text">
+                    <TabItem x:Name="TextTabItem" Header="Text">
                         <Grid Margin="8">
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
@@ -141,13 +150,17 @@
                         </Grid>
                     </TabItem>
 
-                    <TabItem Header="Image">
+                    <TabItem x:Name="ImageTabItem" Header="Image">
                         <DockPanel Margin="8">
                             <StackPanel DockPanel.Dock="Top"
                                         Orientation="Horizontal"
                                         Margin="0,0,0,8"
                                         VerticalAlignment="Center">
-                                <TextBlock Text="Zoom:"
+                                    <TextBlock x:Name="ImageDimensionsTextBlock"
+                                           Text="0px x 0px"
+                                           Margin="0,0,24,0"
+                                           VerticalAlignment="Center" />
+                                    <TextBlock Text="Zoom:"
                                            VerticalAlignment="Center"
                                            Margin="0,0,8,0" />
                                 <Slider x:Name="ZoomSlider"
@@ -195,6 +208,7 @@
                         </DockPanel>
                     </TabItem>
                 </TabControl>
+                </Grid>
             </GroupBox>
         </Grid>
     </DockPanel>

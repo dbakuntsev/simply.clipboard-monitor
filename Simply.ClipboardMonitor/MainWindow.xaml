@@ -96,17 +96,17 @@
                                Foreground="DimGray"
                                Margin="20" />
                     <TabControl x:Name="ContentTabControl" Visibility="Collapsed">
-                    <TabItem x:Name="HexTabItem" Header="Hex">
-                        <Grid Margin="8">
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="8" />
-                                <RowDefinition Height="*" />
-                            </Grid.RowDefinitions>
-                            <TextBlock x:Name="HexStatusTextBlock"
+                        <TabItem x:Name="HexTabItem" Header="Hex">
+                            <Grid Margin="8">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="8" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+                                <TextBlock x:Name="HexStatusTextBlock"
                                        Foreground="DimGray"
                                        Text="Select a clipboard format to preview." />
-                            <ListView x:Name="HexListView"
+                                <ListView x:Name="HexListView"
                                       Grid.Row="2"
                                       FontFamily="Consolas"
                                       FontSize="13"
@@ -116,28 +116,28 @@
                                       VirtualizingPanel.IsVirtualizing="True"
                                       VirtualizingPanel.ScrollUnit="Item"
                                       VirtualizingPanel.VirtualizationMode="Recycling">
-                                <ListView.View>
-                                    <GridView AllowsColumnReorder="False">
-                                        <GridViewColumn Header="Offset" Width="90" DisplayMemberBinding="{Binding Offset}" />
-                                        <GridViewColumn Header="Hex" Width="380" DisplayMemberBinding="{Binding Hex}" />
-                                        <GridViewColumn Header="ASCII" Width="190" DisplayMemberBinding="{Binding Ascii}" />
-                                    </GridView>
-                                </ListView.View>
-                            </ListView>
-                        </Grid>
-                    </TabItem>
+                                    <ListView.View>
+                                        <GridView AllowsColumnReorder="False">
+                                            <GridViewColumn Header="Offset" Width="90" DisplayMemberBinding="{Binding Offset}" />
+                                            <GridViewColumn Header="Hex" Width="380" DisplayMemberBinding="{Binding Hex}" />
+                                            <GridViewColumn Header="ASCII" Width="190" DisplayMemberBinding="{Binding Ascii}" />
+                                        </GridView>
+                                    </ListView.View>
+                                </ListView>
+                            </Grid>
+                        </TabItem>
 
-                    <TabItem x:Name="TextTabItem" Header="Text">
-                        <Grid Margin="8">
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="8" />
-                                <RowDefinition Height="*" />
-                            </Grid.RowDefinitions>
-                            <TextBlock x:Name="TextStatusTextBlock"
+                        <TabItem x:Name="TextTabItem" Header="Text">
+                            <Grid Margin="8">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="8" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+                                <TextBlock x:Name="TextStatusTextBlock"
                                        Foreground="DimGray"
                                        Text="Text preview unavailable for this format." />
-                            <TextBox x:Name="TextContentTextBox"
+                                <TextBox x:Name="TextContentTextBox"
                                      Grid.Row="2"
                                      IsReadOnly="True"
                                      FontFamily="Consolas"
@@ -147,67 +147,80 @@
                                      TextWrapping="NoWrap"
                                      AcceptsReturn="True"
                                      AcceptsTab="True" />
-                        </Grid>
-                    </TabItem>
+                            </Grid>
+                        </TabItem>
 
-                    <TabItem x:Name="ImageTabItem" Header="Image">
-                        <DockPanel Margin="8">
-                            <StackPanel DockPanel.Dock="Top"
-                                        Orientation="Horizontal"
-                                        Margin="0,0,0,8"
-                                        VerticalAlignment="Center">
-                                    <TextBlock x:Name="ImageDimensionsTextBlock"
-                                           Text="0px x 0px"
-                                           Margin="0,0,24,0"
-                                           VerticalAlignment="Center" />
-                                    <TextBlock Text="Zoom:"
-                                           VerticalAlignment="Center"
-                                           Margin="0,0,8,0" />
-                                <Slider x:Name="ZoomSlider"
-                                        Minimum="0.25"
-                                        Maximum="8"
-                                        Value="1"
-                                        Width="220"
-                                        IsEnabled="False"
-                                        ValueChanged="ZoomSlider_OnValueChanged" />
-                                <TextBlock x:Name="ZoomValueTextBlock"
-                                           Text="100%"
-                                           Width="52"
-                                           Margin="8,0,0,0"
-                                           VerticalAlignment="Center" />
-                                <Button Content="Reset"
-                                        Margin="8,0,0,0"
-                                        Padding="10,2"
-                                        Click="ResetZoomButton_OnClick"
-                                        IsEnabled="{Binding IsEnabled, ElementName=ZoomSlider}" />
-                            </StackPanel>
+                        <TabItem x:Name="ImageTabItem" Header="Image">
+                            <DockPanel Margin="8">
+                                <DockPanel DockPanel.Dock="Top"
+                                       LastChildFill="False"
+                                       Margin="0,0,0,8"
+                                       VerticalAlignment="Center">
+                                    <StackPanel x:Name="ImageDimensionsStackPanel"
+                                            DockPanel.Dock="Left"
+                                            VerticalAlignment="Center"
+                                            Orientation="Horizontal">
+                                        <TextBlock x:Name="ImageDimensionsWidthTextBlock"
+                                                   Text="0px" />
+                                        <TextBlock Text="&#x00D7;"
+                                                   Margin="1,0,1,0"
+                                                   Opacity="0.5" />
+                                        <TextBlock x:Name="ImageDimensionsHeightTextBlock"
+                                                   Text="0px" />
+                                    </StackPanel>
+                                    <StackPanel DockPanel.Dock="Right"
+                                            Orientation="Horizontal"
+                                            VerticalAlignment="Center">
+                                        <TextBlock Text="Zoom:"
+                                               VerticalAlignment="Center"
+                                               Margin="0,0,8,0" />
+                                        <Slider x:Name="ZoomSlider"
+                                            Minimum="0.25"
+                                            Maximum="8"
+                                            Value="1"
+                                            Width="220"
+                                            IsEnabled="False"
+                                            ValueChanged="ZoomSlider_OnValueChanged" />
+                                        <TextBlock x:Name="ZoomValueTextBlock"
+                                               Text="100%"
+                                               Width="52"
+                                               Margin="8,0,0,0"
+                                               VerticalAlignment="Center" />
+                                        <Button Content="Reset"
+                                            Margin="8,0,0,0"
+                                            Padding="10,2"
+                                            Click="ResetZoomButton_OnClick"
+                                            IsEnabled="{Binding IsEnabled, ElementName=ZoomSlider}" />
+                                    </StackPanel>
+                                </DockPanel>
 
-                            <Grid>
-                                <TextBlock x:Name="ImageStatusTextBlock"
+                                <Grid>
+                                    <TextBlock x:Name="ImageStatusTextBlock"
                                            Foreground="DimGray"
                                            HorizontalAlignment="Center"
                                            VerticalAlignment="Center"
                                            Text="Image preview unavailable for this format." />
-                                <ScrollViewer x:Name="ImageScrollViewer"
+                                    <ScrollViewer x:Name="ImageScrollViewer"
                                               HorizontalScrollBarVisibility="Auto"
                                               VerticalScrollBarVisibility="Auto"
                                               SizeChanged="ImageScrollViewer_OnSizeChanged">
-                                    <Grid>
-                                        <Image x:Name="ImagePreview"
+                                        <Grid MinWidth="{Binding ViewportWidth, ElementName=ImageScrollViewer}"
+                                          MinHeight="{Binding ViewportHeight, ElementName=ImageScrollViewer}">
+                                            <Image x:Name="ImagePreview"
                                                HorizontalAlignment="Center"
                                                VerticalAlignment="Center"
                                                Stretch="None"
                                                SnapsToDevicePixels="True">
-                                            <Image.RenderTransform>
-                                                <ScaleTransform x:Name="ImageScaleTransform" ScaleX="1" ScaleY="1" />
-                                            </Image.RenderTransform>
-                                        </Image>
-                                    </Grid>
-                                </ScrollViewer>
-                            </Grid>
-                        </DockPanel>
-                    </TabItem>
-                </TabControl>
+                                                <Image.LayoutTransform>
+                                                    <ScaleTransform x:Name="ImageScaleTransform" ScaleX="1" ScaleY="1" />
+                                                </Image.LayoutTransform>
+                                            </Image>
+                                        </Grid>
+                                    </ScrollViewer>
+                                </Grid>
+                            </DockPanel>
+                        </TabItem>
+                    </TabControl>
                 </Grid>
             </GroupBox>
         </Grid>

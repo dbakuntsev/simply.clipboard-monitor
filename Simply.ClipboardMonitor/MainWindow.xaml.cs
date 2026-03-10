@@ -505,8 +505,9 @@ public partial class MainWindow : Window
         ImagePreview.Source = image;
         ImageStatusTextBlock.Text = string.Empty;
         ZoomSlider.IsEnabled = true;
-        ImageDimensionsTextBlock.Text = $"{image.PixelWidth}px x {image.PixelHeight}px";
-        ImageDimensionsTextBlock.Visibility = Visibility.Visible;
+        ImageDimensionsWidthTextBlock.Text = $"{image.PixelWidth}px";
+        ImageDimensionsHeightTextBlock.Text = $"{image.PixelHeight}px";
+        ImageDimensionsStackPanel.Visibility = Visibility.Visible;
         SetZoomValue(1);
         UpdateFitScale();
     }
@@ -516,7 +517,7 @@ public partial class MainWindow : Window
         ImagePreview.Source = null;
         ImageStatusTextBlock.Text = message;
         ZoomSlider.IsEnabled = false;
-        ImageDimensionsTextBlock.Visibility = Visibility.Collapsed;
+        ImageDimensionsStackPanel.Visibility = Visibility.Collapsed;
         SetZoomValue(1);
         ApplyImageScale(1);
     }

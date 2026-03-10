@@ -203,7 +203,7 @@
                                             Minimum="0.25"
                                             Maximum="8"
                                             Value="1"
-                                            Width="180"
+                                            Width="160"
                                             IsEnabled="False"
                                             VerticalAlignment="Center"
                                             ValueChanged="ZoomSlider_OnValueChanged" />
@@ -262,6 +262,8 @@
                                               VerticalScrollBarVisibility="Auto"
                                               SizeChanged="ImageScrollViewer_OnSizeChanged"
                                               PreviewMouseWheel="ImageScrollViewer_PreviewMouseWheel"
+                                              MouseDown="ImageScrollViewer_MouseDown"
+                                              MouseUp="ImageScrollViewer_MouseUp"
                                               MouseMove="ImageScrollViewer_MouseMove"
                                               MouseLeave="ImageScrollViewer_MouseLeave">
                                         <Grid MinWidth="{Binding ViewportWidth, ElementName=ImageScrollViewer}"

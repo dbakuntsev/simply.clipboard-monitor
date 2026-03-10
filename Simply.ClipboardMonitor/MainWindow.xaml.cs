@@ -73,6 +73,10 @@ public partial class MainWindow : Window
     private ListSortDirection _currentSortDirection = ListSortDirection.Ascending;
     private List<FormatColumnPreference> _storedColumnPreferences = [];
     private bool _isMonitoring;
+    private bool _isPanning;
+    private Point _panStartMouse;
+    private double _panStartHorizontalOffset;
+    private double _panStartVerticalOffset;
 
     public MainWindow()
     {
@@ -694,7 +698,7 @@ public partial class MainWindow : Window
         var imgLocalX   = (contentX - imageLeft) / currentScale;
         var imgLocalY   = (contentY - imageTop)  / currentScale;
 
-        StepZoom(10 * (e.Delta > 0 ? 1 : -1));
+        StepZoom(15 * Math.Sign(e.Delta));
 
         Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, () =>
         {
@@ -708,18 +712,65 @@ public partial class MainWindow : Window
         });
     }
 
+    private void ImageScrollViewer_MouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton != MouseButton.Middle)
+        {
+            return;
+        }
+
+        _isPanning = true;
+        _panStartMouse = e.GetPosition(ImageScrollViewer);
+        _panStartHorizontalOffset = ImageScrollViewer.HorizontalOffset;
+        _panStartVerticalOffset   = ImageScrollViewer.VerticalOffset;
+        ImageScrollViewer.Cursor = Cursors.ScrollAll;
+        Mouse.Capture(ImageScrollViewer);
+        e.Handled = true;
+    }
+
+    private void ImageScrollViewer_MouseUp(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton != MouseButton.Middle || !_isPanning)
+        {
+            return;
+        }
+
+        _isPanning = false;
+        Mouse.Capture(null);
+        UpdateImageScrollViewerCursor();
+        e.Handled = true;
+    }
+
     private void ImageScrollViewer_MouseMove(object sender, MouseEventArgs e)
     {
+        if (_isPanning)
+        {
+            var pos = e.GetPosition(ImageScrollViewer);
+            ImageScrollViewer.ScrollToHorizontalOffset(_panStartHorizontalOffset + (_panStartMouse.X - pos.X));
+            ImageScrollViewer.ScrollToVerticalOffset  (_panStartVerticalOffset   + (_panStartMouse.Y - pos.Y));
+            return;
+        }
+
         UpdateImageScrollViewerCursor();
     }
 
     private void ImageScrollViewer_MouseLeave(object sender, MouseEventArgs e)
     {
+        if (_isPanning)
+        {
+            return;
+        }
+
         ImageScrollViewer.Cursor = null;
     }
 
     private void UpdateImageScrollViewerCursor()
     {
+        if (_isPanning)
+        {
+            return;
+        }
+
         if (!ImageScrollViewer.IsMouseOver)
         {
             return;

@@ -587,7 +587,7 @@ public partial class MainWindow : Window
 
     private void ApplyImageScale(double? explicitScale = null)
     {
-        if (ImageScaleTransform == null || ZoomValueTextBlock == null || ZoomSlider == null)
+        if (ImageScaleTransform == null || ZoomTextBox == null || ZoomSlider == null)
         {
             return;
         }
@@ -600,7 +600,7 @@ public partial class MainWindow : Window
 
         ImageScaleTransform.ScaleX = scale;
         ImageScaleTransform.ScaleY = scale;
-        ZoomValueTextBlock.Text = $"{scale * 100:0}%";
+        ZoomTextBox.Text = $"{scale * 100:0}%";
     }
 
     private void SetZoomValue(double value)
@@ -608,6 +608,63 @@ public partial class MainWindow : Window
         _ignoreZoomChanges = true;
         ZoomSlider.Value = value;
         _ignoreZoomChanges = false;
+    }
+
+    private void ZoomTextBox_LostFocus(object sender, RoutedEventArgs e)
+    {
+        CommitZoomTextBox();
+    }
+
+    private void ZoomTextBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
+        {
+            CommitZoomTextBox();
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Escape)
+        {
+            ZoomTextBox.Text = $"{_fitScale * ZoomSlider.Value * 100:0}%";
+            ZoomTextBox.SelectAll();
+            e.Handled = true;
+        }
+    }
+
+    private void CommitZoomTextBox()
+    {
+        var text = ZoomTextBox.Text.Trim().TrimEnd('%').TrimEnd();
+        if (double.TryParse(text, System.Globalization.NumberStyles.Any,
+                            System.Globalization.CultureInfo.CurrentCulture, out var pct) && pct > 0)
+        {
+            ApplyZoomFromPercentage(pct);
+        }
+        else
+        {
+            ZoomTextBox.Text = $"{_fitScale * ZoomSlider.Value * 100:0}%";
+        }
+    }
+
+    private void ApplyZoomFromPercentage(double pct)
+    {
+        var newSliderValue = _fitScale > 0 ? pct / 100.0 / _fitScale : pct / 100.0;
+        newSliderValue = Math.Clamp(newSliderValue, ZoomSlider.Minimum, ZoomSlider.Maximum);
+        ZoomSlider.Value = newSliderValue;
+    }
+
+    private void ZoomUpButton_Click(object sender, RoutedEventArgs e)
+    {
+        StepZoom(+1);
+    }
+
+    private void ZoomDownButton_Click(object sender, RoutedEventArgs e)
+    {
+        StepZoom(-1);
+    }
+
+    private void StepZoom(int direction)
+    {
+        var currentPct = Math.Round(_fitScale * ZoomSlider.Value * 100);
+        ApplyZoomFromPercentage(currentPct + direction);
     }
 
     private static bool TryReadClipboardDataBytes(uint formatId, out byte[] bytes, out string failureMessage)

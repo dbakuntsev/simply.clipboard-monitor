@@ -178,14 +178,46 @@
                                             Minimum="0.25"
                                             Maximum="8"
                                             Value="1"
-                                            Width="220"
+                                            Width="180"
                                             IsEnabled="False"
+                                            VerticalAlignment="Center"
                                             ValueChanged="ZoomSlider_OnValueChanged" />
-                                        <TextBlock x:Name="ZoomValueTextBlock"
-                                               Text="100%"
-                                               Width="52"
-                                               Margin="8,0,0,0"
-                                               VerticalAlignment="Center" />
+                                        <Border Margin="8,0,0,0"
+                                                VerticalAlignment="Center"
+                                                BorderBrush="{x:Static SystemColors.ControlDarkBrush}"
+                                                BorderThickness="1">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBox x:Name="ZoomTextBox"
+                                                         Width="44"
+                                                         BorderThickness="0"
+                                                         Padding="2,1"
+                                                         TextAlignment="Right"
+                                                         VerticalContentAlignment="Center"
+                                                         Text="100%"
+                                                         IsEnabled="{Binding IsEnabled, ElementName=ZoomSlider}"
+                                                         LostFocus="ZoomTextBox_LostFocus"
+                                                         KeyDown="ZoomTextBox_KeyDown" />
+                                                <StackPanel Grid.Column="1"
+                                                            Orientation="Vertical">
+                                                    <RepeatButton Content="▲"
+                                                                  FontSize="6"
+                                                                  Padding="3,1"
+                                                                  Focusable="False"
+                                                                  IsEnabled="{Binding IsEnabled, ElementName=ZoomSlider}"
+                                                                  Click="ZoomUpButton_Click" />
+                                                    <RepeatButton Content="▼"
+                                                                  FontSize="6"
+                                                                  Padding="3,1"
+                                                                  Focusable="False"
+                                                                  IsEnabled="{Binding IsEnabled, ElementName=ZoomSlider}"
+                                                                  Click="ZoomDownButton_Click" />
+                                                </StackPanel>
+                                            </Grid>
+                                        </Border>
                                         <Button Content="Reset"
                                             Margin="8,0,0,0"
                                             Padding="10,2"

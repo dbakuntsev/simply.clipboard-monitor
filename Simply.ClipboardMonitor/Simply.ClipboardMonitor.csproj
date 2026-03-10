@@ -9,6 +9,8 @@
     <AssemblyName>Simply.ClipboardMonitor</AssemblyName>
     <RootNamespace>Simply.ClipboardMonitor</RootNamespace>
     <ApplicationIcon>icon.ico</ApplicationIcon>
+    <Version>1.2</Version>
+    <Copyright>Copyright (c) 2026 Dmitry Bakuntsev</Copyright>
   </PropertyGroup>
 
   <ItemGroup>

@@ -260,7 +260,10 @@
                                     <ScrollViewer x:Name="ImageScrollViewer"
                                               HorizontalScrollBarVisibility="Auto"
                                               VerticalScrollBarVisibility="Auto"
-                                              SizeChanged="ImageScrollViewer_OnSizeChanged">
+                                              SizeChanged="ImageScrollViewer_OnSizeChanged"
+                                              PreviewMouseWheel="ImageScrollViewer_PreviewMouseWheel"
+                                              MouseMove="ImageScrollViewer_MouseMove"
+                                              MouseLeave="ImageScrollViewer_MouseLeave">
                                         <Grid MinWidth="{Binding ViewportWidth, ElementName=ImageScrollViewer}"
                                           MinHeight="{Binding ViewportHeight, ElementName=ImageScrollViewer}"
                                           Background="{StaticResource CheckerboardBrush}">

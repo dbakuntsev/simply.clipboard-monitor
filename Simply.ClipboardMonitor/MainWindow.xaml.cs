@@ -87,6 +87,8 @@ public partial class MainWindow : Window
         FormatListBox.AddHandler(GridViewColumnHeader.ClickEvent, new RoutedEventHandler(FormatListBox_OnColumnHeaderClick));
         ApplyFormatSort();
         InitializePreviewState();
+        PreviewKeyDown += (_, _) => UpdateImageScrollViewerCursor();
+        PreviewKeyUp   += (_, _) => UpdateImageScrollViewerCursor();
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -665,6 +667,67 @@ public partial class MainWindow : Window
     {
         var currentPct = Math.Round(_fitScale * ZoomSlider.Value * 100);
         ApplyZoomFromPercentage(currentPct + direction);
+    }
+
+    private void ImageScrollViewer_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if ((Keyboard.Modifiers & ModifierKeys.Control) == 0)
+        {
+            return;
+        }
+
+        if (ImagePreview.Source is not BitmapSource source)
+        {
+            return;
+        }
+
+        e.Handled = true;
+
+        var mousePos    = e.GetPosition(ImageScrollViewer);
+        var currentScale = _fitScale * ZoomSlider.Value;
+        var contentX    = ImageScrollViewer.HorizontalOffset + mousePos.X;
+        var contentY    = ImageScrollViewer.VerticalOffset   + mousePos.Y;
+        var scaledW     = source.PixelWidth  * currentScale;
+        var scaledH     = source.PixelHeight * currentScale;
+        var imageLeft   = Math.Max(0.0, (ImageScrollViewer.ViewportWidth  - scaledW) / 2.0);
+        var imageTop    = Math.Max(0.0, (ImageScrollViewer.ViewportHeight - scaledH) / 2.0);
+        var imgLocalX   = (contentX - imageLeft) / currentScale;
+        var imgLocalY   = (contentY - imageTop)  / currentScale;
+
+        StepZoom(10 * (e.Delta > 0 ? 1 : -1));
+
+        Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, () =>
+        {
+            var newScale   = _fitScale * ZoomSlider.Value;
+            var newScaledW = source.PixelWidth  * newScale;
+            var newScaledH = source.PixelHeight * newScale;
+            var newImgLeft = Math.Max(0.0, (ImageScrollViewer.ViewportWidth  - newScaledW) / 2.0);
+            var newImgTop  = Math.Max(0.0, (ImageScrollViewer.ViewportHeight - newScaledH) / 2.0);
+            ImageScrollViewer.ScrollToHorizontalOffset(imgLocalX * newScale + newImgLeft - mousePos.X);
+            ImageScrollViewer.ScrollToVerticalOffset  (imgLocalY * newScale + newImgTop  - mousePos.Y);
+        });
+    }
+
+    private void ImageScrollViewer_MouseMove(object sender, MouseEventArgs e)
+    {
+        UpdateImageScrollViewerCursor();
+    }
+
+    private void ImageScrollViewer_MouseLeave(object sender, MouseEventArgs e)
+    {
+        ImageScrollViewer.Cursor = null;
+    }
+
+    private void UpdateImageScrollViewerCursor()
+    {
+        if (!ImageScrollViewer.IsMouseOver)
+        {
+            return;
+        }
+
+        ImageScrollViewer.Cursor = (Keyboard.Modifiers & ModifierKeys.Control) != 0
+            ? Cursors.Hand
+            : null;
     }
 
     private static bool TryReadClipboardDataBytes(uint formatId, out byte[] bytes, out string failureMessage)

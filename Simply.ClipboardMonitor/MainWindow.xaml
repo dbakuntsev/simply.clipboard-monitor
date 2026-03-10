@@ -7,6 +7,31 @@
         mc:Ignorable="d"
         Title="Simply Clipboard Monitor" Height="700" Width="1080"
         MinHeight="460" MinWidth="800">
+    <Window.Resources>
+        <DrawingBrush x:Key="CheckerboardBrush"
+                      TileMode="Tile"
+                      Viewport="0,0,16,16"
+                      ViewportUnits="Absolute"
+                      Opacity="0.15">
+            <DrawingBrush.Drawing>
+                <DrawingGroup>
+                    <GeometryDrawing Brush="White">
+                        <GeometryDrawing.Geometry>
+                            <RectangleGeometry Rect="0,0,16,16" />
+                        </GeometryDrawing.Geometry>
+                    </GeometryDrawing>
+                    <GeometryDrawing Brush="#FFD0D0D0">
+                        <GeometryDrawing.Geometry>
+                            <GeometryGroup>
+                                <RectangleGeometry Rect="0,0,8,8" />
+                                <RectangleGeometry Rect="8,8,8,8" />
+                            </GeometryGroup>
+                        </GeometryDrawing.Geometry>
+                    </GeometryDrawing>
+                </DrawingGroup>
+            </DrawingBrush.Drawing>
+        </DrawingBrush>
+    </Window.Resources>
     <DockPanel>
         <Menu DockPanel.Dock="Top">
             <MenuItem Header="_File">
@@ -237,7 +262,8 @@
                                               VerticalScrollBarVisibility="Auto"
                                               SizeChanged="ImageScrollViewer_OnSizeChanged">
                                         <Grid MinWidth="{Binding ViewportWidth, ElementName=ImageScrollViewer}"
-                                          MinHeight="{Binding ViewportHeight, ElementName=ImageScrollViewer}">
+                                          MinHeight="{Binding ViewportHeight, ElementName=ImageScrollViewer}"
+                                          Background="{StaticResource CheckerboardBrush}">
                                             <Image x:Name="ImagePreview"
                                                HorizontalAlignment="Center"
                                                VerticalAlignment="Center"

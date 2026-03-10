@@ -78,7 +78,7 @@
                             </GridViewColumn>
                             <GridViewColumn Width="44" DisplayMemberBinding="{Binding FormatNumber}">
                                 <GridViewColumn.Header>
-                                    <GridViewColumnHeader x:Name="IdColumnHeader" Content="ID" Tag="FormatNumberValue" />
+                                    <GridViewColumnHeader x:Name="IdColumnHeader" Content="ID" Tag="FormatId" />
                                 </GridViewColumn.Header>
                             </GridViewColumn>
                             <GridViewColumn Width="140">

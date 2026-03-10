@@ -1,6 +1,7 @@
-﻿using System.Collections.ObjectModel;
-using System.Collections;
+﻿using System.Buffers.Binary;
+using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -12,6 +13,7 @@ using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 
 namespace Simply.ClipboardMonitor;
 
@@ -19,7 +21,6 @@ public partial class MainWindow : Window
 {
     private const int WM_CLIPBOARDUPDATE = 0x031D;
     private const int ERROR_NOT_LOCKED = 158;
-    private const int BYTES_PER_ROW = 16;
     private const string PreferencesFileName = "preferences.json";
     private const string DefaultSortProperty = nameof(ClipboardFormatItem.Ordinal);
 
@@ -68,6 +69,7 @@ public partial class MainWindow : Window
     private HwndSource? _hwndSource;
     private double _fitScale = 1.0;
     private bool _ignoreZoomChanges;
+    // Set to true after InitializeComponent to suppress events fired during XAML initialization.
     private bool _isUiReady;
     private string _currentSortProperty = DefaultSortProperty;
     private ListSortDirection _currentSortDirection = ListSortDirection.Ascending;
@@ -140,7 +142,7 @@ public partial class MainWindow : Window
     {
         InitializePreviewState();
 
-        var selectedId = (FormatListBox.SelectedItem as ClipboardFormatItem)?.Id;
+        var selectedId = (FormatListBox.SelectedItem as ClipboardFormatItem)?.FormatId;
         _formats.Clear();
 
         foreach (var item in EnumerateClipboardFormats())
@@ -150,7 +152,7 @@ public partial class MainWindow : Window
 
         if (selectedId.HasValue)
         {
-            var matching = _formats.FirstOrDefault(f => f.Id == selectedId.Value);
+            var matching = _formats.FirstOrDefault(f => f.FormatId == selectedId.Value);
             if (matching != null)
             {
                 FormatListBox.SelectedItem = matching;
@@ -167,8 +169,8 @@ public partial class MainWindow : Window
 
         ContentTabControl.Visibility = Visibility.Visible;
         NoSelectionPanel.Visibility = Visibility.Collapsed;
-        TextTabItem.IsEnabled = IsTextCompatible((uint)item.Id, item.Name);
-        ImageTabItem.IsEnabled = IsImageCompatible((uint)item.Id, item.Name);
+        TextTabItem.IsEnabled = IsTextCompatible(item.FormatId, item.Name);
+        ImageTabItem.IsEnabled = IsImageCompatible(item.FormatId, item.Name);
 
         if (!TextTabItem.IsEnabled && ContentTabControl.SelectedItem == TextTabItem)
             ContentTabControl.SelectedItem = HexTabItem;
@@ -188,10 +190,7 @@ public partial class MainWindow : Window
 
         try
         {
-            if (!TryReadClipboardDataBytes((uint)item.Id, out bytes, out hexFailureMessage))
-            {
-                bytes = null;
-            }
+            TryReadClipboardDataBytes(item.FormatId, out bytes, out hexFailureMessage);
         }
         finally
         {
@@ -201,9 +200,9 @@ public partial class MainWindow : Window
         if (bytes != null)
         {
             SetHexPreview(bytes);
-            UpdateTextPreview((uint)item.Id, item.Name, bytes);
+            UpdateTextPreview(item.FormatId, item.Name, bytes);
 
-            if (TryCreateImagePreview((uint)item.Id, item.Name, bytes, out imagePreview, out imageFailureMessage) &&
+            if (TryCreateImagePreview(item.FormatId, item.Name, bytes, out imagePreview, out imageFailureMessage) &&
                 imagePreview != null)
             {
                 SetImagePreview(imagePreview);
@@ -219,7 +218,6 @@ public partial class MainWindow : Window
             SetTextPreviewUnavailable("Text preview requires byte-addressable clipboard data.");
             SetImagePreviewUnavailable("Image preview requires byte-addressable clipboard data.");
         }
-
     }
 
     private IEnumerable<ClipboardFormatItem> EnumerateClipboardFormats()
@@ -248,7 +246,7 @@ public partial class MainWindow : Window
                 var contentSizeValue = hasSize ? (long)sizeBytes : -1L;
                 var contentSize = hasSize ? sizeBytes.ToString("N0") : "n/a";
 
-                results.Add(new ClipboardFormatItem(ordinal, (int)format, format, name, contentSize, contentSizeValue));
+                results.Add(new ClipboardFormatItem(ordinal, format, name, contentSize, contentSizeValue));
                 ordinal++;
             }
         }
@@ -262,7 +260,7 @@ public partial class MainWindow : Window
 
     private void SetHexPreview(byte[] data)
     {
-        HexStatusTextBlock.Text = $"Showing {data.Length:N0} bytes ({((data.Length + BYTES_PER_ROW - 1) / BYTES_PER_ROW):N0} rows).";
+        HexStatusTextBlock.Text = $"Showing {data.Length:N0} bytes ({((data.Length + HexRowCollection.BytesPerRow - 1) / HexRowCollection.BytesPerRow):N0} rows).";
         HexListView.ItemsSource = new HexRowCollection(data);
     }
 
@@ -490,20 +488,12 @@ public partial class MainWindow : Window
         var fileBytes = new byte[dibBytes.Length + 14];
         fileBytes[0] = (byte)'B';
         fileBytes[1] = (byte)'M';
-        WriteUInt32(fileBytes, 2, (uint)fileBytes.Length);
-        WriteUInt32(fileBytes, 10, pixelOffset);
+        BinaryPrimitives.WriteUInt32LittleEndian(fileBytes.AsSpan(2), (uint)fileBytes.Length);
+        BinaryPrimitives.WriteUInt32LittleEndian(fileBytes.AsSpan(10), pixelOffset);
         Buffer.BlockCopy(dibBytes, 0, fileBytes, 14, dibBytes.Length);
 
         bitmap = CreateBitmapFromEncodedImage(fileBytes);
         return true;
-    }
-
-    private static void WriteUInt32(byte[] buffer, int offset, uint value)
-    {
-        buffer[offset] = (byte)(value & 0xFF);
-        buffer[offset + 1] = (byte)((value >> 8) & 0xFF);
-        buffer[offset + 2] = (byte)((value >> 16) & 0xFF);
-        buffer[offset + 3] = (byte)((value >> 24) & 0xFF);
     }
 
     private void SetImagePreview(BitmapSource image)
@@ -572,7 +562,7 @@ public partial class MainWindow : Window
         if (ImagePreview.Source is not BitmapSource source || source.PixelWidth <= 0 || source.PixelHeight <= 0)
         {
             _fitScale = 1;
-            ApplyImageScale(1);
+            ApplyImageScale();
             return;
         }
 
@@ -639,8 +629,7 @@ public partial class MainWindow : Window
     private void CommitZoomTextBox()
     {
         var text = ZoomTextBox.Text.Trim().TrimEnd('%').TrimEnd();
-        if (double.TryParse(text, System.Globalization.NumberStyles.Any,
-                            System.Globalization.CultureInfo.CurrentCulture, out var pct) && pct > 0)
+        if (double.TryParse(text, NumberStyles.Any, CultureInfo.CurrentCulture, out var pct) && pct > 0)
         {
             ApplyZoomFromPercentage(pct);
         }
@@ -700,7 +689,7 @@ public partial class MainWindow : Window
 
         StepZoom(15 * Math.Sign(e.Delta));
 
-        Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, () =>
+        Dispatcher.BeginInvoke(DispatcherPriority.Background, () =>
         {
             var newScale   = _fitScale * ZoomSlider.Value;
             var newScaledW = source.PixelWidth  * newScale;
@@ -781,9 +770,9 @@ public partial class MainWindow : Window
             : null;
     }
 
-    private static bool TryReadClipboardDataBytes(uint formatId, out byte[] bytes, out string failureMessage)
+    private static bool TryReadClipboardDataBytes(uint formatId, out byte[]? bytes, out string failureMessage)
     {
-        bytes = [];
+        bytes = null;
 
         if (NonGlobalMemoryFormats.Contains(formatId))
         {
@@ -950,17 +939,6 @@ public partial class MainWindow : Window
         new AboutDialog { Owner = this }.ShowDialog();
     }
 
-    private sealed class ClipboardFormatItem(int ordinal, int id, uint formatNumberValue, string name, string contentSize, long contentSizeValue)
-    {
-        public int Ordinal { get; } = ordinal;
-        public int Id { get; } = id;
-        public uint FormatNumberValue { get; } = formatNumberValue;
-        public string FormatNumber => FormatNumberValue.ToString("D");
-        public string Name { get; } = name;
-        public string ContentSize { get; } = contentSize;
-        public long ContentSizeValue { get; } = contentSizeValue;
-    }
-
     private void FormatListBox_OnColumnHeaderClick(object sender, RoutedEventArgs e)
     {
         if (e.OriginalSource is not GridViewColumnHeader header || header.Role == GridViewColumnHeaderRole.Padding)
@@ -1009,7 +987,7 @@ public partial class MainWindow : Window
     private static bool IsSupportedSortProperty(string propertyName)
     {
         return propertyName is nameof(ClipboardFormatItem.Ordinal)
-            or nameof(ClipboardFormatItem.FormatNumberValue)
+            or nameof(ClipboardFormatItem.FormatId)
             or nameof(ClipboardFormatItem.Name)
             or nameof(ClipboardFormatItem.ContentSizeValue);
     }
@@ -1229,7 +1207,7 @@ public partial class MainWindow : Window
         return propertyName switch
         {
             nameof(ClipboardFormatItem.Ordinal) => OrdinalColumnHeader,
-            nameof(ClipboardFormatItem.FormatNumberValue) => IdColumnHeader,
+            nameof(ClipboardFormatItem.FormatId) => IdColumnHeader,
             nameof(ClipboardFormatItem.Name) => FormatColumnHeader,
             nameof(ClipboardFormatItem.ContentSizeValue) => SizeColumnHeader,
             _ => null
@@ -1241,7 +1219,7 @@ public partial class MainWindow : Window
         return propertyName switch
         {
             nameof(ClipboardFormatItem.Ordinal) => "#",
-            nameof(ClipboardFormatItem.FormatNumberValue) => "ID",
+            nameof(ClipboardFormatItem.FormatId) => "ID",
             nameof(ClipboardFormatItem.Name) => "Format",
             nameof(ClipboardFormatItem.ContentSizeValue) => "Size",
             _ => propertyName
@@ -1254,136 +1232,6 @@ public partial class MainWindow : Window
         return Path.Combine(appData, "Simply.ClipboardMonitor", PreferencesFileName);
     }
 
-    private sealed class UserPreferences
-    {
-        public string? SortProperty { get; set; }
-        public string? SortDirection { get; set; }
-        public List<FormatColumnPreference>? FormatColumns { get; set; }
-        public bool MonitorChanges { get; set; } = true;
-    }
-
-    private sealed class FormatColumnPreference
-    {
-        public string Key { get; set; } = string.Empty;
-        public double? Width { get; set; }
-    }
-    private sealed class HexRowCollection(byte[] data) : IList
-    {
-        private readonly Dictionary<int, HexRow> _cache = [];
-
-        public int Count => (data.Length + BYTES_PER_ROW - 1) / BYTES_PER_ROW;
-        public bool IsReadOnly => true;
-        public bool IsFixedSize => true;
-        public bool IsSynchronized => false;
-        public object SyncRoot => this;
-
-        public object? this[int index]
-        {
-            get
-            {
-                if (index < 0 || index >= Count)
-                {
-                    throw new ArgumentOutOfRangeException(nameof(index));
-                }
-
-                if (_cache.TryGetValue(index, out var cached))
-                {
-                    return cached;
-                }
-
-                var offset = index * BYTES_PER_ROW;
-                var rowLength = Math.Min(BYTES_PER_ROW, data.Length - offset);
-                var hexBuilder = new StringBuilder();
-                var asciiBuilder = new StringBuilder();
-
-                for (var i = 0; i < BYTES_PER_ROW; i++)
-                {
-                    if (i < rowLength)
-                    {
-                        var b = data[offset + i];
-                        hexBuilder.Append(b.ToString("X2"));
-                        asciiBuilder.Append(b >= 32 && b <= 126 ? (char)b : '.');
-                    }
-                    else
-                    {
-                        hexBuilder.Append("  ");
-                    }
-
-                    if (i != BYTES_PER_ROW - 1)
-                    {
-                        hexBuilder.Append(' ');
-                    }
-                }
-
-                var row = new HexRow(offset.ToString("X8"), hexBuilder.ToString(), asciiBuilder.ToString());
-                _cache[index] = row;
-                return row;
-            }
-            set => throw new NotSupportedException();
-        }
-
-        public int Add(object? value) => throw new NotSupportedException();
-        public void Clear() => throw new NotSupportedException();
-        public bool Contains(object? value) => false;
-        public int IndexOf(object? value) => -1;
-        public void Insert(int index, object? value) => throw new NotSupportedException();
-        public void Remove(object? value) => throw new NotSupportedException();
-        public void RemoveAt(int index) => throw new NotSupportedException();
-        public void CopyTo(Array array, int index) => throw new NotSupportedException();
-        public IEnumerator GetEnumerator()
-        {
-            for (var i = 0; i < Count; i++)
-            {
-                yield return this[i];
-            }
-        }
-    }
-
-    private sealed class HexRow(string offset, string hex, string ascii)
-    {
-        public string Offset { get; } = offset;
-        public string Hex { get; } = hex;
-        public string Ascii { get; } = ascii;
-    }
-
-    private static class NativeMethods
-    {
-        [DllImport("user32.dll", SetLastError = true)]
-        internal static extern bool AddClipboardFormatListener(IntPtr hwnd);
-
-        [DllImport("user32.dll", SetLastError = true)]
-        internal static extern bool RemoveClipboardFormatListener(IntPtr hwnd);
-
-        [DllImport("user32.dll", SetLastError = true)]
-        internal static extern bool OpenClipboard(IntPtr hWndNewOwner);
-
-        [DllImport("user32.dll", SetLastError = true)]
-        internal static extern bool CloseClipboard();
-
-        [DllImport("user32.dll")]
-        internal static extern int CountClipboardFormats();
-
-        [DllImport("user32.dll", SetLastError = true)]
-        internal static extern uint EnumClipboardFormats(uint format);
-
-        [DllImport("user32.dll", SetLastError = true)]
-        internal static extern IntPtr GetClipboardData(uint uFormat);
-
-        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-        internal static extern int GetClipboardFormatName(uint format, StringBuilder lpszFormatName, int cchMaxCount);
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        internal static extern IntPtr GlobalLock(IntPtr hMem);
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        internal static extern bool GlobalUnlock(IntPtr hMem);
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        internal static extern UIntPtr GlobalSize(IntPtr hMem);
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        internal static extern uint GetOEMCP();
-    }
 }
 
 

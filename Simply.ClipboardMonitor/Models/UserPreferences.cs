@@ -1,4 +1,4 @@
-namespace Simply.ClipboardMonitor;
+namespace Simply.ClipboardMonitor.Models;
 
 internal sealed class UserPreferences
 {

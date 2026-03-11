@@ -1,7 +1,7 @@
 using System.Collections;
 using System.Text;
 
-namespace Simply.ClipboardMonitor;
+namespace Simply.ClipboardMonitor.Common;
 
 internal sealed class HexRowCollection(byte[] data) : IList
 {

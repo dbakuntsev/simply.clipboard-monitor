@@ -1,7 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Text;
 
-namespace Simply.ClipboardMonitor;
+namespace Simply.ClipboardMonitor.Common;
 
 internal static class NativeMethods
 {

@@ -1,6 +1,6 @@
 using System.Diagnostics;
 
-namespace Simply.ClipboardMonitor;
+namespace Simply.ClipboardMonitor.Common;
 
 internal static class ShellHelper
 {

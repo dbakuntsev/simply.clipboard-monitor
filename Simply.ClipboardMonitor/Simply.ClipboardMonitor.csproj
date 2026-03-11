@@ -8,7 +8,7 @@
     <UseWPF>true</UseWPF>
     <AssemblyName>Simply.ClipboardMonitor</AssemblyName>
     <RootNamespace>Simply.ClipboardMonitor</RootNamespace>
-    <ApplicationIcon>icon.ico</ApplicationIcon>
+    <ApplicationIcon>Resources\icon.ico</ApplicationIcon>
     <Version>1.2.2</Version>
     <Copyright>Copyright (c) 2026 Dmitry Bakuntsev</Copyright>
   </PropertyGroup>
@@ -17,7 +17,7 @@
     <Content Include="..\LICENSE.txt" Link="LICENSE.txt">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
-    <Content Include="icon.ico" />
+    <Content Include="Resources\icon.ico" />
   </ItemGroup>
 
 </Project>

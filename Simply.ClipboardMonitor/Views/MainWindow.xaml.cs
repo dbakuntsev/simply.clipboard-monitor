@@ -1,4 +1,6 @@
-﻿using System.Buffers.Binary;
+﻿using Simply.ClipboardMonitor.Common;
+using Simply.ClipboardMonitor.Models;
+using System.Buffers.Binary;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Globalization;

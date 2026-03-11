@@ -1,3 +1,4 @@
+using Simply.ClipboardMonitor.Common;
 using System.Windows;
 using System.Windows.Navigation;
 

@@ -44,12 +44,18 @@ Whenever Windows sends `WM_CLIPBOARDUPDATE` and clipboard change monitoring is a
 1. Opens the clipboard (with retry).
 2. Enumerates available format IDs with `EnumClipboardFormats`.
 3. Resolves display names (well-known map + `GetClipboardFormatName`).
-4. Attempts to read format size (`GlobalSize`) for HGLOBAL-backed formats.
+4. Reads the data size for each format — strategy depends on handle type:
+   - **HGLOBAL formats** (`CF_DIB`, `CF_UNICODETEXT`, custom formats, etc.): `GlobalSize`.
+   - **HBITMAP formats** (`CF_BITMAP`, `CF_DSPBITMAP`): `GetObject` → stride × height.
+   - **HENHMETAFILE formats** (`CF_ENHMETAFILE`, `CF_DSPENHMETAFILE`): `GetEnhMetaFileBits` with a zero-length buffer.
 5. Updates the format list UI.
 
 When you select a format:
 
-1. The app reads bytes via `GetClipboardData` + `GlobalLock`/`GlobalUnlock` (if supported for that format).
+1. The app reads bytes via `GetClipboardData`, then extracts them using a strategy matched to the handle type:
+   - **HGLOBAL**: `GlobalLock` / `GlobalUnlock` copy.
+   - **HBITMAP**: `GetDIBits` converts the GDI bitmap to an uncompressed 32 bpp DIB byte block.
+   - **HENHMETAFILE**: `GetEnhMetaFileBits` copies the raw EMF stream.
 2. It renders a lazy hex table (16 bytes per row).
 3. It attempts text decoding for text-like formats.
 4. It attempts image decoding for image-like formats.
@@ -84,13 +90,18 @@ The monitoring state is saved automatically when changed and restored on the nex
   - Others: UTF-8 (strict/BOM-aware) with fallback to default encoding.
 
 ### Image
-- Attempts image preview for DIB IDs (`CF_DIB`, `CF_DIBV5`) and image-like names (`png`, `jpeg`, `gif`, `bitmap`, etc.).
-- DIB data is converted in-memory to a BMP stream before decoding.
-- Includes fit-to-viewport baseline scale and user zoom multiplier.
+- Attempts image preview for:
+  - **DIB formats** (`CF_DIB`, `CF_DIBV5`): the raw DIB block is prefixed with a `BITMAPFILEHEADER` and decoded by WPF's `BitmapDecoder`.
+  - **HBITMAP formats** (`CF_BITMAP`, `CF_DSPBITMAP`): converted to a 32 bpp DIB via `GetDIBits`, then decoded the same way as DIB formats above.
+  - **Encoded image formats** (names containing `png`, `jpeg`, `gif`, etc.): decoded directly from the byte stream.
+- Includes fit-to-viewport baseline scale and user zoom multiplier (Ctrl + mouse wheel or zoom controls).
+- Middle mouse button pans the image inside the scroll viewer.
 
 ## Known Limitations
 
-- Some clipboard formats use non-HGLOBAL handles (for example `CF_BITMAP`, `CF_METAFILEPICT`), so raw byte preview is intentionally unavailable.
+- **`CF_PALETTE` (HPALETTE)**: palette objects cannot be usefully read as a raw byte stream; the format shows in the list with no hex or image preview.
+- **`CF_ENHMETAFILE` / `CF_DSPENHMETAFILE`** (HENHMETAFILE): the raw EMF byte stream is available in the hex viewer, but no image rendering is provided — WPF has no native EMF decoder and rendering via GDI is outside the current scope.
+- **`CF_METAFILEPICT` / `CF_DSPMETAFILEPICT`** (HGLOBAL wrapping a `METAFILEPICT` struct): the hex viewer shows the raw struct bytes; the embedded `HMETAFILE` handle value inside is not dereferenced.
 - There are no automated tests in this repository currently.
 
 ## Tech Stack
@@ -98,7 +109,7 @@ The monitoring state is saved automatically when changed and restored on the nex
 - C#
 - WPF
 - .NET 8 (`net8.0-windows`)
-- Win32 clipboard APIs via P/Invoke (`user32.dll`, `kernel32.dll`)
+- Win32 APIs via P/Invoke (`user32.dll`, `kernel32.dll`, `gdi32.dll`)
 
 ## Project Structure
 

@@ -104,11 +104,16 @@ The monitoring state is saved automatically when changed and restored on the nex
 
 - `Simply.ClipboardMonitor.sln` - solution
 - `Simply.ClipboardMonitor/Simply.ClipboardMonitor.csproj` - app project
-- `Simply.ClipboardMonitor/MainWindow.xaml` - main window UI layout
-- `Simply.ClipboardMonitor/MainWindow.xaml.cs` - core logic (clipboard listener, parsing, previews, preferences)
-- `Simply.ClipboardMonitor/AboutDialog.xaml` - About dialog UI layout
-- `Simply.ClipboardMonitor/AboutDialog.xaml.cs` - About dialog logic
-- `Simply.ClipboardMonitor/ShellHelper.cs` - helper for opening URLs in the default browser
+- `Simply.ClipboardMonitor/App.xaml` / `App.xaml.cs` - WPF application entry point
+- `Simply.ClipboardMonitor/Views/MainWindow.xaml` - main window UI layout
+- `Simply.ClipboardMonitor/Views/MainWindow.xaml.cs` - main window logic (clipboard listener, parsing, previews, zoom, pan, sort, preferences)
+- `Simply.ClipboardMonitor/Views/AboutDialog.xaml` - About dialog UI layout
+- `Simply.ClipboardMonitor/Views/AboutDialog.xaml.cs` - About dialog logic
+- `Simply.ClipboardMonitor/Common/ClipboardFormatItem.cs` - format list row model
+- `Simply.ClipboardMonitor/Common/HexRowCollection.cs` - virtualised hex-dump row collection
+- `Simply.ClipboardMonitor/Common/NativeMethods.cs` - Win32 P/Invoke declarations
+- `Simply.ClipboardMonitor/Common/ShellHelper.cs` - helper for opening URLs in the default browser
+- `Simply.ClipboardMonitor/Models/UserPreferences.cs` - preferences and column preference model
 
 ## Build and Run
 

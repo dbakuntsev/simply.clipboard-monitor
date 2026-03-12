@@ -1,4 +1,6 @@
-﻿using Simply.ClipboardMonitor.Common;
+﻿using Microsoft.Data.Sqlite;
+using Microsoft.Win32;
+using Simply.ClipboardMonitor.Common;
 using Simply.ClipboardMonitor.Models;
 using System.Buffers.Binary;
 using System.Collections.ObjectModel;
@@ -29,6 +31,14 @@ public partial class MainWindow : Window
     public static readonly RoutedUICommand RefreshClipboardCommand = new(
         "Refresh", "RefreshClipboard", typeof(MainWindow),
         new InputGestureCollection { new KeyGesture(Key.F5) });
+
+    public static readonly RoutedUICommand LoadCommand = new(
+        "Load", "Load", typeof(MainWindow),
+        new InputGestureCollection { new KeyGesture(Key.O, ModifierKeys.Control) });
+
+    public static readonly RoutedUICommand SaveCommand = new(
+        "Save", "Save", typeof(MainWindow),
+        new InputGestureCollection { new KeyGesture(Key.S, ModifierKeys.Control) });
 
     private static readonly Dictionary<uint, string> WellKnownFormats = new()
     {
@@ -79,11 +89,15 @@ public partial class MainWindow : Window
     private Point _panStartMouse;
     private double _panStartHorizontalOffset;
     private double _panStartVerticalOffset;
+    // Tracks the path of the most recently loaded or saved .clipdb file.
+    private string? _currentFilePath;
 
     public MainWindow()
     {
         InitializeComponent();
         CommandBindings.Add(new CommandBinding(RefreshClipboardCommand, RefreshClipboardCommand_Executed, RefreshClipboardCommand_CanExecute));
+        CommandBindings.Add(new CommandBinding(LoadCommand, LoadCommand_Executed));
+        CommandBindings.Add(new CommandBinding(SaveCommand, SaveCommand_Executed));
         _isUiReady = true;
         FormatListBox.ItemsSource = _formats;
         LoadPreferences();
@@ -998,8 +1012,21 @@ public partial class MainWindow : Window
 
     private void UpdateStatusBar()
     {
-        StatusText.Text = _isMonitoring ? "Monitoring..." : "Ready";
+        StatusText.Text = _isMonitoring ? "Monitoring..." : "Press F5 to refresh";
     }
+
+    private void UpdateFileStatusBar(string action, string path)
+    {
+        FileStatusText.Text = $"{action}: {Path.GetFileName(path)}";
+        FileStatusSeparator.Visibility = Visibility.Visible;
+    }
+
+    // Returns the clipboard handle-type tag that matches how Windows stores this format.
+    private static string GetHandleType(uint formatId) =>
+        HBitmapFormats.Contains(formatId)        ? "hbitmap"       :
+        HEnhMetaFileFormats.Contains(formatId)   ? "henhmetafile"  :
+        NonGlobalMemoryFormats.Contains(formatId) ? "none"         :
+        "hglobal";
 
     private void RefreshClipboardCommand_Executed(object sender, ExecutedRoutedEventArgs e)
     {
@@ -1009,6 +1036,16 @@ public partial class MainWindow : Window
     private void RefreshClipboardCommand_CanExecute(object sender, CanExecuteRoutedEventArgs e)
     {
         e.CanExecute = !_isMonitoring;
+    }
+
+    private void LoadCommand_Executed(object sender, ExecutedRoutedEventArgs e)
+    {
+        MenuItemLoad_Click(sender, e);
+    }
+
+    private void SaveCommand_Executed(object sender, ExecutedRoutedEventArgs e)
+    {
+        MenuItemSave_Click(sender, e);
     }
 
     private void MenuItemExit_Click(object sender, RoutedEventArgs e)
@@ -1048,6 +1085,283 @@ public partial class MainWindow : Window
     private void MenuItemAbout_Click(object sender, RoutedEventArgs e)
     {
         new AboutDialog { Owner = this }.ShowDialog();
+    }
+
+    private void MenuItemLoad_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new OpenFileDialog
+        {
+            Title           = "Open Clipboard Database",
+            Filter          = "Clipboard Database (*.clipdb)|*.clipdb",
+            DefaultExt      = "clipdb",
+            CheckFileExists = true,
+        };
+
+        if (dlg.ShowDialog(this) != true)
+            return;
+
+        try
+        {
+            LoadFromFile(dlg.FileName);
+        }
+        catch (Exception ex)
+        {
+            ShowFileOperationError("load", ex);
+        }
+    }
+
+    private void MenuItemSave_Click(object sender, RoutedEventArgs e)
+    {
+        if (_currentFilePath == null)
+        {
+            MenuItemSaveAs_Click(sender, e);
+            return;
+        }
+
+        try
+        {
+            SaveToFile(_currentFilePath);
+        }
+        catch (Exception ex)
+        {
+            ShowFileOperationError("save", ex);
+        }
+    }
+
+    private void MenuItemSaveAs_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new SaveFileDialog
+        {
+            Title           = "Save Clipboard Database",
+            Filter          = "Clipboard Database (*.clipdb)|*.clipdb",
+            DefaultExt      = "clipdb",
+            OverwritePrompt = true,
+            FileName        = _currentFilePath != null ? Path.GetFileName(_currentFilePath) : string.Empty,
+        };
+
+        if (dlg.ShowDialog(this) != true)
+            return;
+
+        try
+        {
+            SaveToFile(dlg.FileName);
+        }
+        catch (Exception ex)
+        {
+            ShowFileOperationError("save", ex);
+        }
+    }
+
+    // ── Save implementation ─────────────────────────────────────────────────
+
+    private void SaveToFile(string path)
+    {
+        if (_formats.Count == 0)
+        {
+            MessageBox.Show(this,
+                "There are no clipboard formats to save.\n\nCopy something to the clipboard first, then save.",
+                "Nothing to Save", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (!TryOpenClipboard(IntPtr.Zero))
+        {
+            MessageBox.Show(this,
+                "Unable to open the clipboard for reading.\n\nClose any application that may be using the clipboard and try again.",
+                "Save Failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        List<SavedClipboardFormat> formats;
+        try
+        {
+            formats = new List<SavedClipboardFormat>(_formats.Count);
+            foreach (var item in _formats)
+            {
+                var handleType = GetHandleType(item.FormatId);
+                byte[]? data = null;
+                if (handleType != "none")
+                    TryReadClipboardDataBytes(item.FormatId, out data, out _);
+
+                formats.Add(new SavedClipboardFormat(item.Ordinal, item.FormatId, item.Name, handleType, data));
+            }
+        }
+        finally
+        {
+            NativeMethods.CloseClipboard();
+        }
+
+        ClipboardDatabase.Save(path, formats);
+        _currentFilePath = path;
+        UpdateFileStatusBar("Saved", path);
+    }
+
+    // ── Load implementation ─────────────────────────────────────────────────
+
+    private void LoadFromFile(string path)
+    {
+        var formats = ClipboardDatabase.Load(path);
+
+        if (formats.Count == 0)
+        {
+            MessageBox.Show(this,
+                "The clipboard database is empty — no formats were stored in the file.",
+                "Nothing to Load", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (!TryOpenClipboard(_hwndSource?.Handle ?? IntPtr.Zero))
+        {
+            MessageBox.Show(this,
+                "Unable to open the clipboard for writing.\n\nClose any application that may be using the clipboard and try again.",
+                "Load Failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        try
+        {
+            NativeMethods.EmptyClipboard();
+            foreach (var fmt in formats)
+                RestoreFormat(fmt);
+        }
+        finally
+        {
+            NativeMethods.CloseClipboard();
+        }
+
+        _currentFilePath = path;
+        UpdateFileStatusBar("Loaded", path);
+
+        // When monitoring is active, WM_CLIPBOARDUPDATE fires automatically
+        // and refreshes the list; refresh manually only when monitoring is off.
+        if (!_isMonitoring)
+            RefreshFormats();
+    }
+
+    private static void RestoreFormat(SavedClipboardFormat fmt)
+    {
+        // Custom format IDs (≥ 0xC000) are assigned dynamically per Windows session;
+        // re-register by name to get the current-session ID.
+        uint actualId = fmt.FormatId >= 0xC000
+            ? NativeMethods.RegisterClipboardFormat(fmt.FormatName)
+            : fmt.FormatId;
+
+        if (actualId == 0)
+            return;
+
+        switch (fmt.HandleType)
+        {
+            case "hglobal":
+                RestoreAsHGlobal(actualId, fmt.Data);
+                break;
+            case "hbitmap":
+                RestoreAsHBitmap(actualId, fmt.Data);
+                break;
+            case "henhmetafile":
+                RestoreAsHEnhMetaFile(actualId, fmt.Data);
+                break;
+            // "none" (e.g. CF_PALETTE): no bytes were captured; skip silently.
+        }
+    }
+
+    private static void RestoreAsHGlobal(uint formatId, byte[]? data)
+    {
+        if (data is not { Length: > 0 })
+            return;
+
+        const uint GMEM_MOVEABLE = 0x0002;
+        var hGlobal = NativeMethods.GlobalAlloc(GMEM_MOVEABLE, (UIntPtr)(uint)data.Length);
+        if (hGlobal == IntPtr.Zero)
+            return;
+
+        var ptr = NativeMethods.GlobalLock(hGlobal);
+        if (ptr == IntPtr.Zero)
+        {
+            NativeMethods.GlobalFree(hGlobal);
+            return;
+        }
+
+        try   { Marshal.Copy(data, 0, ptr, data.Length); }
+        finally { NativeMethods.GlobalUnlock(hGlobal); }
+
+        if (NativeMethods.SetClipboardData(formatId, hGlobal) == IntPtr.Zero)
+            NativeMethods.GlobalFree(hGlobal);
+    }
+
+    private static void RestoreAsHEnhMetaFile(uint formatId, byte[]? data)
+    {
+        if (data is not { Length: > 0 })
+            return;
+
+        var hemf = NativeMethods.SetEnhMetaFileBits((uint)data.Length, data);
+        if (hemf == IntPtr.Zero)
+            return;
+
+        if (NativeMethods.SetClipboardData(formatId, hemf) == IntPtr.Zero)
+            NativeMethods.DeleteEnhMetaFile(hemf);
+    }
+
+    private static void RestoreAsHBitmap(uint formatId, byte[]? data)
+    {
+        var headerSize = Marshal.SizeOf<BITMAPINFOHEADER>();
+        if (data == null || data.Length <= headerSize)
+            return;
+
+        // The stored block is BITMAPINFOHEADER + pixel data (produced by GetDIBits, 32 bpp BI_RGB).
+        var header    = MemoryMarshal.Read<BITMAPINFOHEADER>(data.AsSpan(0, headerSize));
+        var pixelData = data.AsSpan(headerSize).ToArray();
+
+        var hdc = NativeMethods.GetDC(IntPtr.Zero);
+        if (hdc == IntPtr.Zero)
+            return;
+
+        try
+        {
+            const uint CBM_INIT        = 4;
+            const uint DIB_RGB_COLORS  = 0;
+            var hBitmap = NativeMethods.CreateDIBitmap(hdc, ref header, CBM_INIT, pixelData, ref header, DIB_RGB_COLORS);
+            if (hBitmap == IntPtr.Zero)
+                return;
+
+            if (NativeMethods.SetClipboardData(formatId, hBitmap) == IntPtr.Zero)
+                NativeMethods.DeleteObject(hBitmap);
+        }
+        finally
+        {
+            NativeMethods.ReleaseDC(IntPtr.Zero, hdc);
+        }
+    }
+
+    // ── Error reporting ─────────────────────────────────────────────────────
+
+    private void ShowFileOperationError(string operation, Exception ex)
+    {
+        var (message, remedy) = ex switch
+        {
+            SqliteException { Message: var m } when m.Contains("not a database", StringComparison.OrdinalIgnoreCase)
+                => ($"The file is not a valid clipboard database.",
+                    "Select a .clipdb file created by this application."),
+
+            SqliteException { Message: var m }
+                => ($"Database error: {m}", null),
+
+            UnauthorizedAccessException
+                => ("Access to the file was denied.", "Check that you have permission to read/write the selected file."),
+
+            IOException { Message: var m }
+                => ($"File I/O error: {m}", "Check that the file is not in use by another application."),
+
+            OutOfMemoryException
+                => ("The clipboard database is too large to load.", "Try loading a smaller file."),
+
+            _ => (ex.Message, null),
+        };
+
+        var text = remedy != null
+            ? $"Failed to {operation} clipboard database:\n\n{message}\n\n{remedy}"
+            : $"Failed to {operation} clipboard database:\n\n{message}";
+
+        MessageBox.Show(this, text, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
     }
 
     private void FormatListBox_OnColumnHeaderClick(object sender, RoutedEventArgs e)

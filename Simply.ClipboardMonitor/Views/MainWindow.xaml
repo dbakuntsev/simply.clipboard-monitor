@@ -35,6 +35,10 @@
     <DockPanel>
         <Menu DockPanel.Dock="Top">
             <MenuItem Header="_File">
+                <MenuItem Header="_Load..."    Command="{x:Static local:MainWindow.LoadCommand}" />
+                <MenuItem Header="_Save"       Command="{x:Static local:MainWindow.SaveCommand}" />
+                <MenuItem Header="Save _As..." Click="MenuItemSaveAs_Click" />
+                <Separator />
                 <MenuItem Header="E_xit" Click="MenuItemExit_Click" />
             </MenuItem>
             <MenuItem Header="_Clipboard" SubmenuOpened="ClipboardMenu_SubmenuOpened">
@@ -54,6 +58,10 @@
         <StatusBar DockPanel.Dock="Bottom">
             <StatusBarItem>
                 <TextBlock x:Name="StatusText" />
+            </StatusBarItem>
+            <Separator x:Name="FileStatusSeparator" Visibility="Collapsed" />
+            <StatusBarItem>
+                <TextBlock x:Name="FileStatusText" Foreground="DimGray" />
             </StatusBarItem>
         </StatusBar>
 
@@ -145,7 +153,7 @@
                                         <GridView AllowsColumnReorder="False">
                                             <GridViewColumn Header="Offset" Width="90" DisplayMemberBinding="{Binding Offset}" />
                                             <GridViewColumn Header="Hex" Width="380" DisplayMemberBinding="{Binding Hex}" />
-                                            <GridViewColumn Header="ASCII" Width="190" DisplayMemberBinding="{Binding Ascii}" />
+                                            <GridViewColumn Header="ASCII" Width="160" DisplayMemberBinding="{Binding Ascii}" />
                                         </GridView>
                                     </ListView.View>
                                 </ListView>

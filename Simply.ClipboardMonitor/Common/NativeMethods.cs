@@ -84,4 +84,37 @@ internal static class NativeMethods
 
     [DllImport("gdi32.dll", SetLastError = true)]
     internal static extern uint GetEnhMetaFileBits(IntPtr hemf, uint cbBuffer, byte[]? lpData);
+
+    // ── Clipboard write (used for save/load) ────────────────────────────────
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    internal static extern IntPtr GlobalAlloc(uint uFlags, UIntPtr dwBytes);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    internal static extern IntPtr GlobalFree(IntPtr hMem);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern bool EmptyClipboard();
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern IntPtr SetClipboardData(uint uFormat, IntPtr hMem);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    internal static extern uint RegisterClipboardFormat(string lpszFormat);
+
+    // Creates an HENHMETAFILE from a raw EMF byte stream.
+    [DllImport("gdi32.dll", SetLastError = true)]
+    internal static extern IntPtr SetEnhMetaFileBits(uint nSize, byte[] pb);
+
+    [DllImport("gdi32.dll", SetLastError = true)]
+    internal static extern bool DeleteEnhMetaFile(IntPtr hemf);
+
+    // Creates an HBITMAP device-dependent bitmap from a DIB.
+    // lpbmih: pointer to BITMAPINFOHEADER; pjBits: pixel data; lpbmi: BITMAPINFO (= header for 32 bpp BI_RGB).
+    [DllImport("gdi32.dll", SetLastError = true)]
+    internal static extern IntPtr CreateDIBitmap(IntPtr hdc, ref BITMAPINFOHEADER lpbmih,
+        uint fdwInit, byte[] pjBits, ref BITMAPINFOHEADER lpbmi, uint iUsage);
+
+    [DllImport("gdi32.dll", SetLastError = true)]
+    internal static extern bool DeleteObject(IntPtr ho);
 }

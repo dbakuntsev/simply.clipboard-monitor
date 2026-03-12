@@ -28,6 +28,7 @@ The app is designed as a clipboard debugging and inspection utility for software
 - Inspect raw clipboard payloads via hex rows and offsets.
 - Quickly sanity-check text encoding behavior (`CF_TEXT`, `CF_OEMTEXT`, `CF_UNICODETEXT`).
 - Preview clipboard images and verify basic rendering.
+- Save a clipboard snapshot to a `.clipdb` file for later analysis or sharing.
 
 ## Potential Uses
 
@@ -59,6 +60,21 @@ When you select a format:
 2. It renders a lazy hex table (16 bytes per row).
 3. It attempts text decoding for text-like formats.
 4. It attempts image decoding for image-like formats.
+
+### Saving and Loading (.clipdb files)
+
+Use **File → Save As…** to snapshot the current clipboard to a `.clipdb` file. Use **File → Save** to overwrite the most recently loaded or saved file. Use **File → Load…** to restore a snapshot into the clipboard.
+
+Internally a `.clipdb` file is a SQLite database with two tables:
+
+- `data_blobs` — stores each distinct binary payload once, keyed by its SHA-256 hash. Identical payloads across formats are stored only once.
+- `clipboard_formats` — one row per clipboard format, recording the format ID, name, handle type (`hglobal` / `hbitmap` / `henhmetafile` / `none`), and a reference to the data blob.
+
+On load, each format is restored using the handle-type-appropriate Win32 call:
+- **HGLOBAL** formats: `GlobalAlloc` + `SetClipboardData`.
+- **HBITMAP** formats: `CreateDIBitmap` (rebuilds a GDI bitmap from the stored 32 bpp DIB block) + `SetClipboardData`.
+- **HENHMETAFILE** formats: `SetEnhMetaFileBits` + `SetClipboardData`.
+- Custom format names (IDs ≥ 0xC000) are re-registered with `RegisterClipboardFormat` before writing, so format IDs remain correct even if they changed between Windows sessions.
 
 ## Clipboard Monitoring
 
@@ -99,9 +115,9 @@ The monitoring state is saved automatically when changed and restored on the nex
 
 ## Known Limitations
 
-- **`CF_PALETTE` (HPALETTE)**: palette objects cannot be usefully read as a raw byte stream; the format shows in the list with no hex or image preview.
-- **`CF_ENHMETAFILE` / `CF_DSPENHMETAFILE`** (HENHMETAFILE): the raw EMF byte stream is available in the hex viewer, but no image rendering is provided — WPF has no native EMF decoder and rendering via GDI is outside the current scope.
-- **`CF_METAFILEPICT` / `CF_DSPMETAFILEPICT`** (HGLOBAL wrapping a `METAFILEPICT` struct): the hex viewer shows the raw struct bytes; the embedded `HMETAFILE` handle value inside is not dereferenced.
+- **`CF_PALETTE` (HPALETTE)**: palette objects cannot be read as a raw byte stream. The format appears in the list but has no hex, image, or save/restore support.
+- **`CF_ENHMETAFILE` / `CF_DSPENHMETAFILE`** (HENHMETAFILE): the raw EMF byte stream is available in the hex viewer and is saved/restored correctly, but no image rendering is provided — WPF has no native EMF decoder and rendering via GDI is outside the current scope.
+- **`CF_METAFILEPICT` / `CF_DSPMETAFILEPICT`** (HGLOBAL wrapping a `METAFILEPICT` struct): the hex viewer shows the raw struct bytes; the embedded `HMETAFILE` handle value inside is not dereferenced and the metafile data is not separately captured.
 - There are no automated tests in this repository currently.
 
 ## Tech Stack
@@ -110,6 +126,7 @@ The monitoring state is saved automatically when changed and restored on the nex
 - WPF
 - .NET 8 (`net8.0-windows`)
 - Win32 APIs via P/Invoke (`user32.dll`, `kernel32.dll`, `gdi32.dll`)
+- SQLite via `Microsoft.Data.Sqlite` (clipboard database persistence)
 
 ## Project Structure
 
@@ -122,6 +139,7 @@ The monitoring state is saved automatically when changed and restored on the nex
 - `Simply.ClipboardMonitor/Views/AboutDialog.xaml.cs` - About dialog logic
 - `Simply.ClipboardMonitor/Common/ClipboardFormatItem.cs` - format list row model
 - `Simply.ClipboardMonitor/Common/HexRowCollection.cs` - virtualised hex-dump row collection
+- `Simply.ClipboardMonitor/Common/ClipboardDatabase.cs` - .clipdb save/load logic (SQLite)
 - `Simply.ClipboardMonitor/Common/NativeMethods.cs` - Win32 P/Invoke declarations
 - `Simply.ClipboardMonitor/Common/ShellHelper.cs` - helper for opening URLs in the default browser
 - `Simply.ClipboardMonitor/Models/UserPreferences.cs` - preferences and column preference model

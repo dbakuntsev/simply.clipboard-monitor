@@ -1,4 +1,5 @@
 using Simply.ClipboardMonitor.Common;
+using System.Reflection;
 using System.Windows;
 using System.Windows.Navigation;
 
@@ -6,8 +7,16 @@ namespace Simply.ClipboardMonitor;
 
 public partial class AboutDialog : Window
 {
+    public string AppVersion { get; }
+
     public AboutDialog()
     {
+        var raw = Assembly.GetExecutingAssembly()
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+            ?.InformationalVersion ?? string.Empty;
+        AppVersion = $"v{raw.Split('+')[0]}";
+
+        DataContext = this;
         InitializeComponent();
     }
 

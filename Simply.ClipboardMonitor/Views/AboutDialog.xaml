@@ -8,10 +8,16 @@
         ShowInTaskbar="False"
         FocusManager.FocusedElement="{Binding ElementName=OkButton}">
     <StackPanel Margin="24,20,24,20" VerticalAlignment="Center">
-        <TextBlock Text="Simply Clipboard Monitor"
-                   FontSize="18"
-                   FontWeight="Bold"
-                   Margin="0,0,0,8" />
+        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+            <TextBlock Text="Simply Clipboard Monitor"
+                       FontSize="18"
+                       FontWeight="Bold" />
+            <TextBlock Text="{Binding AppVersion}"
+                       FontSize="13"
+                       Foreground="DimGray"
+                       VerticalAlignment="Bottom"
+                       Margin="8,0,0,3" />
+        </StackPanel>
         <TextBlock Text="Copyright &#169; 2026 Dmitry Bakuntsev"
                    Margin="0,0,0,8" />
         <StackPanel Orientation="Horizontal" Margin="0,0,0,8">

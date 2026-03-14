@@ -167,9 +167,24 @@
                                     <RowDefinition Height="8" />
                                     <RowDefinition Height="*" />
                                 </Grid.RowDefinitions>
-                                <TextBlock x:Name="TextStatusTextBlock"
-                                       Foreground="DimGray"
-                                       Text="Text preview unavailable for this format." />
+                                <DockPanel LastChildFill="True">
+                                    <StackPanel DockPanel.Dock="Right"
+                                                Orientation="Horizontal"
+                                                VerticalAlignment="Center">
+                                        <TextBlock Text="Encoding:"
+                                                   VerticalAlignment="Center"
+                                                   Foreground="DimGray"
+                                                   Margin="0,0,6,0" />
+                                        <ComboBox x:Name="TextEncodingComboBox"
+                                                  Width="230"
+                                                  IsEnabled="False"
+                                                  SelectionChanged="TextEncodingComboBox_SelectionChanged" />
+                                    </StackPanel>
+                                    <TextBlock x:Name="TextStatusTextBlock"
+                                               Foreground="DimGray"
+                                               VerticalAlignment="Center"
+                                               Text="Text preview unavailable for this format." />
+                                </DockPanel>
                                 <TextBox x:Name="TextContentTextBox"
                                      Grid.Row="2"
                                      IsReadOnly="True"

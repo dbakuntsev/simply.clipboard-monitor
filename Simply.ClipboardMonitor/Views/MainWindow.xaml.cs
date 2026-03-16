@@ -41,6 +41,10 @@ public partial class MainWindow : Window
         "Save", "Save", typeof(MainWindow),
         new InputGestureCollection { new KeyGesture(Key.S, ModifierKeys.Control) });
 
+    public static readonly RoutedUICommand ExportCommand = new(
+        "Export Selected Format", "ExportSelectedFormat", typeof(MainWindow),
+        new InputGestureCollection { new KeyGesture(Key.E, ModifierKeys.Control) });
+
     private static readonly Dictionary<uint, string> WellKnownFormats = new()
     {
         [1] = "CF_TEXT",
@@ -94,9 +98,16 @@ public partial class MainWindow : Window
     private string? _currentFilePath;
 
     // Text-preview encoding state
-    private byte[]?                    _currentTextBytes;
-    private bool                       _suppressEncodingChange;
+    private byte[]?                      _currentTextBytes;
+    private bool                         _suppressEncodingChange;
     private IReadOnlyList<EncodingItem>? _encodingItems;
+    private Encoding?                    _currentAutoDetectedEncoding;
+    private bool                         _textEncodingManuallyChanged;
+
+    // Export state — raw bytes and identity of the currently selected format
+    private byte[]? _currentFormatBytes;
+    private uint    _currentFormatId;
+    private string  _currentFormatName = string.Empty;
 
     public MainWindow()
     {
@@ -107,6 +118,7 @@ public partial class MainWindow : Window
         CommandBindings.Add(new CommandBinding(RefreshClipboardCommand, RefreshClipboardCommand_Executed, RefreshClipboardCommand_CanExecute));
         CommandBindings.Add(new CommandBinding(LoadCommand, LoadCommand_Executed));
         CommandBindings.Add(new CommandBinding(SaveCommand, SaveCommand_Executed));
+        CommandBindings.Add(new CommandBinding(ExportCommand, ExportCommand_Executed, ExportCommand_CanExecute));
         _isUiReady = true;
         FormatListBox.ItemsSource = _formats;
         LoadPreferences();
@@ -190,6 +202,10 @@ public partial class MainWindow : Window
             return;
         }
 
+        _currentFormatId    = item.FormatId;
+        _currentFormatName  = item.Name;
+        _currentFormatBytes = null;
+
         ContentTabControl.Visibility = Visibility.Visible;
         NoSelectionPanel.Visibility = Visibility.Collapsed;
         TextTabItem.IsEnabled = IsTextCompatible(item.FormatId, item.Name);
@@ -219,6 +235,8 @@ public partial class MainWindow : Window
         {
             NativeMethods.CloseClipboard();
         }
+
+        _currentFormatBytes = bytes;
 
         if (bytes != null)
         {
@@ -295,7 +313,9 @@ public partial class MainWindow : Window
 
     private void UpdateTextPreview(uint formatId, string formatName, byte[] bytes)
     {
-        _currentTextBytes = bytes;
+        _currentTextBytes            = bytes;
+        _currentAutoDetectedEncoding = null;
+        _textEncodingManuallyChanged = false;
 
         if (!TryDecodeTextContent(formatId, formatName, bytes, out var text, out var message, out var detectedEncoding))
         {
@@ -303,6 +323,7 @@ public partial class MainWindow : Window
             return;
         }
 
+        _currentAutoDetectedEncoding    = detectedEncoding;
         TextContentTextBox.Foreground   = SystemColors.WindowTextBrush;
         TextContentTextBox.Text         = text;
         TextStatusTextBlock.Text        = DecodedTextStatusText(text);
@@ -342,6 +363,8 @@ public partial class MainWindow : Window
             return;
         if (TextEncodingComboBox.SelectedItem is not EncodingItem item || _currentTextBytes == null)
             return;
+
+        _textEncodingManuallyChanged = true;
 
         try
         {
@@ -701,6 +724,8 @@ public partial class MainWindow : Window
     private void SetTextPreviewUnavailable(string message)
     {
         _currentTextBytes               = null;
+        _currentAutoDetectedEncoding    = null;
+        _textEncodingManuallyChanged    = false;
         TextStatusTextBlock.Text        = message;
         TextContentTextBox.Foreground   = SystemColors.WindowTextBrush;
         TextContentTextBox.Text         = string.Empty;
@@ -717,6 +742,9 @@ public partial class MainWindow : Window
         ContentTabControl.SelectedIndex = 0;
         ContentTabControl.Visibility = Visibility.Collapsed;
         NoSelectionPanel.Visibility = Visibility.Visible;
+        _currentFormatBytes = null;
+        _currentFormatId    = 0;
+        _currentFormatName  = string.Empty;
     }
 
     private void ZoomSlider_OnValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -1213,6 +1241,16 @@ public partial class MainWindow : Window
         MenuItemSave_Click(sender, e);
     }
 
+    private void ExportCommand_CanExecute(object sender, CanExecuteRoutedEventArgs e)
+    {
+        e.CanExecute = _currentFormatBytes is { Length: > 0 };
+    }
+
+    private void ExportCommand_Executed(object sender, ExecutedRoutedEventArgs e)
+    {
+        MenuItemExportSelectedFormat_Click(sender, e);
+    }
+
     private void MenuItemExit_Click(object sender, RoutedEventArgs e)
     {
         Close();
@@ -1314,6 +1352,122 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             ShowFileOperationError("save", ex);
+        }
+    }
+
+    // ── Export implementation ────────────────────────────────────────────────
+
+    private void MenuItemExportSelectedFormat_Click(object sender, RoutedEventArgs e)
+    {
+        if (_currentFormatBytes is not { Length: > 0 })
+            return;
+
+        bool textAvailable  = _currentAutoDetectedEncoding != null;
+        bool imageAvailable = ImagePreview.Source is BitmapSource;
+
+        // Build filter list in display order
+        var filters = new List<(string FilterPart, string Ext)>();
+        if (textAvailable)
+            filters.Add(("Text (*.txt)|*.txt", ".txt"));
+        if (imageAvailable)
+        {
+            filters.Add(("PNG Image (*.png)|*.png", ".png"));
+            filters.Add(("JPEG Image (*.jpg)|*.jpg", ".jpg"));
+        }
+        filters.Add(("Binary Data (*.bin)|*.bin", ".bin"));
+
+        // Determine the 1-based default filter index
+        int defaultFilter;
+        if (textAvailable)
+        {
+            defaultFilter = filters.FindIndex(f => f.Ext == ".txt") + 1;
+        }
+        else if (imageAvailable)
+        {
+            var norm = _currentFormatName.ToLowerInvariant();
+            defaultFilter = (norm.Contains("jpeg") || norm.Contains("jpg"))
+                ? filters.FindIndex(f => f.Ext == ".jpg") + 1
+                : filters.FindIndex(f => f.Ext == ".png") + 1;
+        }
+        else
+        {
+            defaultFilter = filters.FindIndex(f => f.Ext == ".bin") + 1;
+        }
+
+        var selectedClipboardItem = FormatListBox.SelectedItem as ClipboardFormatItem;
+        string fileName = $"clipboard-{new string((selectedClipboardItem?.Name ?? "CF_UNKNOWN").Select(ch => Path.GetInvalidFileNameChars().Contains(ch) ? '_' : ch).ToArray())}-{DateTime.Now:yyyyMMddTHHmmss}";
+
+        var dlg = new SaveFileDialog
+        {
+            Title           = $"Export Selected Clipboard Format: {selectedClipboardItem?.Name ?? "CF_UNKNOWN"}",
+            Filter          = string.Join("|", filters.Select(f => f.FilterPart)),
+            FilterIndex     = defaultFilter,
+            DefaultExt      = filters[defaultFilter - 1].Ext.TrimStart('.'),
+            FileName        = fileName,
+            OverwritePrompt = true,
+        };
+
+        if (dlg.ShowDialog(this) != true)
+            return;
+
+        var selectedExt = filters[dlg.FilterIndex - 1].Ext;
+        try
+        {
+            switch (selectedExt)
+            {
+                case ".txt": ExportAsText(dlg.FileName);  break;
+                case ".png": ExportAsPng(dlg.FileName);   break;
+                case ".jpg": ExportAsJpeg(dlg.FileName);  break;
+                case ".bin": File.WriteAllBytes(dlg.FileName, _currentFormatBytes); break;
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Failed to export:\n\n{ex.Message}",
+                "Export Failed", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void ExportAsText(string path)
+    {
+        Encoding encoding;
+        if (ContentTabControl.SelectedItem == TextTabItem
+            && _textEncodingManuallyChanged
+            && TextEncodingComboBox.SelectedItem is EncodingItem { Encoding: var manualEncoding })
+        {
+            encoding = manualEncoding;
+        }
+        else
+        {
+            encoding = _currentAutoDetectedEncoding!;
+        }
+
+        var text = encoding.GetString(_currentTextBytes!).TrimEnd('\0');
+        File.WriteAllText(path, text, encoding);
+    }
+
+    private void ExportAsPng(string path)
+    {
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create((BitmapSource)ImagePreview.Source!));
+        using var fs = File.Create(path);
+        encoder.Save(fs);
+    }
+
+    private void ExportAsJpeg(string path)
+    {
+        var norm = _currentFormatName.ToLowerInvariant();
+        if (norm.Contains("jpeg") || norm.Contains("jpg"))
+        {
+            // Source is already JPEG — write raw bytes to preserve original quality.
+            File.WriteAllBytes(path, _currentFormatBytes!);
+        }
+        else
+        {
+            var encoder = new JpegBitmapEncoder { QualityLevel = 80 };
+            encoder.Frames.Add(BitmapFrame.Create((BitmapSource)ImagePreview.Source!));
+            using var fs = File.Create(path);
+            encoder.Save(fs);
         }
     }
 

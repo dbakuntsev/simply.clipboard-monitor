@@ -35,9 +35,11 @@
     <DockPanel>
         <Menu DockPanel.Dock="Top">
             <MenuItem Header="_File">
-                <MenuItem Header="_Load..."    Command="{x:Static local:MainWindow.LoadCommand}" />
+                <MenuItem Header="L_oad..."    Command="{x:Static local:MainWindow.LoadCommand}" />
                 <MenuItem Header="_Save"       Command="{x:Static local:MainWindow.SaveCommand}" />
                 <MenuItem Header="Save _As..." Click="MenuItemSaveAs_Click" />
+                <Separator />
+                <MenuItem Header="_Export Selected Format..." Command="{x:Static local:MainWindow.ExportCommand}" />
                 <Separator />
                 <MenuItem Header="E_xit" Click="MenuItemExit_Click" />
             </MenuItem>

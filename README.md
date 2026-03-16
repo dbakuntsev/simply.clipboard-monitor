@@ -5,7 +5,7 @@
 It shows:
 - The list of data formats currently available in the clipboard.
 - Raw bytes as a hex dump (when the format is byte-addressable).
-- Decoded text preview (for text-like formats).
+- Decoded text preview (for text-like formats), with encoding detection and a manual encoding selector.
 - Image preview (for image-like formats).
 
 ![Screenshot](.github/screenshots/demo1.png)
@@ -29,6 +29,7 @@ The app is designed as a clipboard debugging and inspection utility for software
 - Quickly sanity-check text encoding behavior (`CF_TEXT`, `CF_OEMTEXT`, `CF_UNICODETEXT`).
 - Preview clipboard images and verify basic rendering.
 - Save a clipboard snapshot to a `.clipdb` file for later analysis or sharing.
+- Export an individual clipboard format as text, image, or raw binary file.
 
 ## Potential Uses
 
@@ -82,7 +83,7 @@ Clipboard change monitoring is **enabled by default**. When active, the format l
 
 ### Turning monitoring ON and OFF
 
-Use **Clipboard -> Monitor Changes** in the menu bar to toggle monitoring on or off. 
+Use **Clipboard → Monitor Changes** in the menu bar to toggle monitoring on or off. 
 
 The menu item displays a checkmark and the status bar at the bottom shows "Monitoring..." while monitoring is active.
 
@@ -100,10 +101,13 @@ The monitoring state is saved automatically when changed and restored on the nex
 ### Text
 - Enabled for classic text IDs and text-like format names (`text`, `html`, `rtf`, `xml`, `json`, `csv`).
 - Decoding strategy:
-  - `CF_UNICODETEXT`: UTF-16.
+  - `CF_UNICODETEXT`: UTF-16 LE.
   - `CF_TEXT`: system ANSI/default code page.
-  - `CF_OEMTEXT`: system OEM code page.
-  - Others: UTF-8 (strict/BOM-aware) with fallback to default encoding.
+  - `CF_OEMTEXT`: system OEM code page (e.g. CP437).
+  - Others: UTF-8 BOM → UTF-16 BOM/heuristic → strict UTF-8 → system default.
+- Status line shows character count, non-whitespace character count, and line count. Any of `\r`, `\n`, or `\r\n` counts as a line separator.
+- An **Encoding** drop-down lists all encodings supported by Windows. The auto-detected encoding is pre-selected. Selecting a different encoding re-decodes the raw bytes on the spot; decoding failures are shown inline in red.
+- The manually selected encoding is used when exporting as `.txt` (see below).
 
 ### Image
 - Attempts image preview for:
@@ -112,6 +116,24 @@ The monitoring state is saved automatically when changed and restored on the nex
   - **Encoded image formats** (names containing `png`, `jpeg`, `gif`, etc.): decoded directly from the byte stream.
 - Includes fit-to-viewport baseline scale and user zoom multiplier (Ctrl + mouse wheel or zoom controls).
 - Middle mouse button pans the image inside the scroll viewer.
+
+### Exporting a format
+
+Use **File → Export Selected Format…** (`Ctrl+E`) to save the currently selected clipboard format to a file. The command is disabled when no format is selected or the format has no captured data (Size = n/a).
+
+A **Save As** dialog opens with the file name pre-set to `clipboard-{format_name}-{timestamp}`. The available file types depend on what previews are active for the selected format:
+
+| Extension | Availability | Default when… |
+|-----------|-------------|---------------|
+| `.txt` | Text preview is available | Text preview is available |
+| `.png` | Image preview is available | Image preview is available and format is not a JPEG |
+| `.jpg` | Image preview is available | Format is a JPEG image (e.g. `image/jpeg`) |
+| `.bin` | Always | No other format applies |
+
+- **`.txt`** — decodes the raw bytes using the auto-detected encoding. If the Text tab is active and the encoding was manually changed, the manually selected encoding is used instead.
+- **`.png`** — re-encodes the current image preview as a PNG file.
+- **`.jpg`** — for natively JPEG clipboard formats writes the raw bytes unchanged; for all other image sources re-encodes at 80% quality.
+- **`.bin`** — writes the raw clipboard bytes as-is.
 
 ## Known Limitations
 
@@ -134,7 +156,7 @@ The monitoring state is saved automatically when changed and restored on the nex
 - `Simply.ClipboardMonitor/Simply.ClipboardMonitor.csproj` - app project
 - `Simply.ClipboardMonitor/App.xaml` / `App.xaml.cs` - WPF application entry point
 - `Simply.ClipboardMonitor/Views/MainWindow.xaml` - main window UI layout
-- `Simply.ClipboardMonitor/Views/MainWindow.xaml.cs` - main window logic (clipboard listener, parsing, previews, zoom, pan, sort, preferences)
+- `Simply.ClipboardMonitor/Views/MainWindow.xaml.cs` - main window logic (clipboard listener, parsing, previews, encoding detection, export, zoom, pan, sort, preferences)
 - `Simply.ClipboardMonitor/Views/AboutDialog.xaml` - About dialog UI layout
 - `Simply.ClipboardMonitor/Views/AboutDialog.xaml.cs` - About dialog logic
 - `Simply.ClipboardMonitor/Common/ClipboardFormatItem.cs` - format list row model

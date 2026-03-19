@@ -24,7 +24,8 @@ internal sealed record SessionEntry(
     long     SessionId,
     DateTime Timestamp,
     string   FormatsText,
-    long     TotalSize);
+    long     TotalSize,
+    IReadOnlyList<(uint FormatId, string FormatName)> Formats);
 
 /// <summary>
 /// Persists clipboard change history to a local SQLite database (history.db).
@@ -199,10 +200,16 @@ internal static class ClipboardHistory
         {
             using var conn = OpenConnection(readOnly: true);
             using var cmd  = conn.CreateCommand();
+            // GROUP_CONCAT produces "formatId<TAB>formatName" pairs joined by newlines,
+            // one per format in the session (ordered by item ordinal via subquery).
             cmd.CommandText = """
-                SELECT id, timestamp, formats_text, total_size
-                FROM   sessions
-                ORDER  BY id DESC
+                SELECT s.id, s.timestamp, s.formats_text, s.total_size,
+                       GROUP_CONCAT(CAST(cf.format_id AS TEXT) || char(9) || cf.format_name, char(10))
+                FROM   sessions s
+                LEFT JOIN session_items    si ON si.session_id          = s.id
+                LEFT JOIN clipboard_formats cf ON cf.id                 = si.clipboard_format_id
+                GROUP  BY s.id
+                ORDER  BY s.id DESC
                 LIMIT  @limit
                 """;
             cmd.Parameters.AddWithValue("@limit", maxCount);
@@ -215,7 +222,20 @@ internal static class ClipboardHistory
                 var timestamp   = DateTime.Parse(reader.GetString(1));
                 var formatsText = reader.GetString(2);
                 var totalSize   = reader.GetInt64(3);
-                result.Add(new SessionEntry(sessionId, timestamp, formatsText, totalSize));
+
+                // Parse "id\tname\nid\tname\n..." into a typed list.
+                var formats = new List<(uint FormatId, string FormatName)>();
+                if (!reader.IsDBNull(4))
+                {
+                    foreach (var line in reader.GetString(4).Split('\n', StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        var tab = line.IndexOf('\t');
+                        if (tab > 0 && uint.TryParse(line[..tab], out var fid))
+                            formats.Add((fid, line[(tab + 1)..]));
+                    }
+                }
+
+                result.Add(new SessionEntry(sessionId, timestamp, formatsText, totalSize, formats));
             }
 
             return result;

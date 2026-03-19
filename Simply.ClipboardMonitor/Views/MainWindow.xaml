@@ -146,21 +146,41 @@
                               ScrollViewer.VerticalScrollBarVisibility="Auto">
                         <ListView.View>
                             <GridView>
-                                <GridViewColumn Header="Date" Width="128"
+                                <GridViewColumn Header="Date" Width="120"
                                                 DisplayMemberBinding="{Binding DateText}" />
-                                <GridViewColumn Width="92">
+                                <GridViewColumn Width="106">
                                     <GridViewColumn.Header>
                                         <GridViewColumnHeader Content="Formats" />
                                     </GridViewColumn.Header>
                                     <GridViewColumn.CellTemplate>
                                         <DataTemplate>
-                                            <TextBlock Text="{Binding FormatsText}"
-                                                       TextTrimming="CharacterEllipsis"
-                                                       ToolTip="{Binding FormatsText}" />
+                                            <!-- One coloured pill per recognised format category:
+                                                 IMG TXT HTML RTF FILE  — OTHER when none match -->
+                                            <ItemsControl ItemsSource="{Binding Pills}"
+                                                          ToolTip="{Binding FormatsTooltip}">
+                                                <ItemsControl.ItemsPanel>
+                                                    <ItemsPanelTemplate>
+                                                        <StackPanel Orientation="Horizontal" />
+                                                    </ItemsPanelTemplate>
+                                                </ItemsControl.ItemsPanel>
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <Border Background="{Binding Background}"
+                                                                CornerRadius="3"
+                                                                Padding="5,1"
+                                                                Margin="0,0,3,0">
+                                                            <TextBlock Text="{Binding Label}"
+                                                                       Foreground="White"
+                                                                       FontSize="10"
+                                                                       FontWeight="Bold" />
+                                                        </Border>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
                                         </DataTemplate>
                                     </GridViewColumn.CellTemplate>
                                 </GridViewColumn>
-                                <GridViewColumn Header="Size" Width="60"
+                                <GridViewColumn Header="Size" Width="54"
                                                 DisplayMemberBinding="{Binding SizeText}" />
                             </GridView>
                         </ListView.View>

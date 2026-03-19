@@ -133,12 +133,36 @@ public partial class MainWindow : Window
     private readonly Channel<Action> _historyChannel =
         Channel.CreateUnbounded<Action>();
 
+    // ── History list pill colours ─────────────────────────────────────────────
+    private static readonly Brush PillBrushImage = MakeBrush(0x5B, 0x9B, 0xD5); // blue  — images
+    private static readonly Brush PillBrushText  = MakeBrush(0x70, 0xAD, 0x47); // green — text
+    private static readonly Brush PillBrushHtml  = MakeBrush(0xED, 0x7D, 0x31); // orange — HTML
+    private static readonly Brush PillBrushRtf   = MakeBrush(0x9E, 0x52, 0x9F); // purple — RTF
+    private static readonly Brush PillBrushFile  = MakeBrush(0x8B, 0x65, 0x33); // brown — files
+    private static readonly Brush PillBrushOther = MakeBrush(0x80, 0x80, 0x80); // gray — other
+
+    private static Brush MakeBrush(byte r, byte g, byte b)
+    {
+        var brush = new SolidColorBrush(Color.FromRgb(r, g, b));
+        brush.Freeze();
+        return brush;
+    }
+
+    /// <summary>A single labelled pill displayed in the Formats column of the history list.</summary>
+    private sealed class FormatPill
+    {
+        public required string Label      { get; init; }
+        public required Brush  Background { get; init; }
+    }
+
     private sealed class HistoryItem
     {
         public required long     SessionId   { get; init; }
         public required DateTime Timestamp   { get; init; }
         public required string   FormatsText { get; init; }
         public required long     TotalSize   { get; init; }
+        public required IReadOnlyList<(uint FormatId, string FormatName)> Formats { get; init; }
+
         public string DateText => Timestamp.ToString("yyyy-MM-dd HH:mm:ss");
         public string SizeText => TotalSize switch
         {
@@ -146,6 +170,12 @@ public partial class MainWindow : Window
             >= 1024         => $"{TotalSize / 1024.0:F1} KB",
             _               => $"{TotalSize} B",
         };
+
+        /// <summary>Pills shown in the Formats column, one per recognised format category.</summary>
+        public IReadOnlyList<FormatPill> Pills => ComputePills(Formats);
+
+        /// <summary>Tooltip text: total count on the first line, then one "Name (ID)" per line.</summary>
+        public string FormatsTooltip => ComputeFormatsTooltip(Formats);
     }
 
     public MainWindow()
@@ -1297,8 +1327,24 @@ public partial class MainWindow : Window
 
     private void UpdateStatusBar()
     {
-        StatusText.Text = _isMonitoring ? "Monitoring..." : "Press F5 to refresh";
+        if (_isMonitoring && _isTrackingHistory)
+        {
+            var size = ClipboardHistory.GetDatabaseFileSize();
+            StatusText.Text = $"Monitoring... · Tracking history ({FormatFileSize(size)} storage size)...";
+        }
+        else
+        {
+            StatusText.Text = _isMonitoring ? "Monitoring..." : "Press F5 to refresh";
+        }
     }
+
+    private static string FormatFileSize(long bytes) => bytes switch
+    {
+        >= 1024L * 1024 * 1024 => $"{bytes / (1024.0 * 1024 * 1024):F1} GB",
+        >= 1024L * 1024        => $"{bytes / (1024.0 * 1024):F1} MB",
+        >= 1024                => $"{bytes / 1024.0:F1} KB",
+        _                      => $"{bytes} B",
+    };
 
     private void UpdateFileStatusBar(string action, string path)
     {
@@ -1432,18 +1478,22 @@ public partial class MainWindow : Window
                 _historyChannel.Writer.TryWrite(() =>
                 {
                     var removed = ClipboardHistory.EnforceLimits(maxEntries, maxBytes);
-                    // Only reload the UI list if rows were actually deleted and the
-                    // history panel is visible — otherwise nothing changed.
-                    if (removed && trackingHistory)
+                    if (removed || trackingHistory)
                     {
                         Dispatcher.InvokeAsync(() =>
                         {
-                            if (_historySnapshots != null)
+                            // Reload the list only if rows were actually deleted and the
+                            // history panel is visible — otherwise nothing changed.
+                            if (removed && trackingHistory)
                             {
-                                _historySnapshots = null;
-                                RefreshFormats();
+                                if (_historySnapshots != null)
+                                {
+                                    _historySnapshots = null;
+                                    RefreshFormats();
+                                }
+                                LoadHistoryFromDatabase();
                             }
-                            LoadHistoryFromDatabase();
+                            UpdateStatusBar();
                         });
                     }
                 });
@@ -2174,6 +2224,7 @@ public partial class MainWindow : Window
             }
         }
 
+        UpdateStatusBar();
         SavePreferences();
     }
 
@@ -2320,6 +2371,8 @@ public partial class MainWindow : Window
             var formatsText = ClipboardHistory.BuildFormatsText(snapshots);
             var totalSize   = snapshots.Sum(s => s.OriginalSize);
 
+            var formats = snapshots.Select(s => (s.FormatId, s.FormatName)).ToList();
+
             Dispatcher.InvokeAsync(() =>
             {
                 if (trimmed)
@@ -2338,10 +2391,12 @@ public partial class MainWindow : Window
                         Timestamp   = timestamp,
                         FormatsText = formatsText,
                         TotalSize   = totalSize,
+                        Formats     = formats,
                     };
                     _historyItems.Insert(0, entry);
                     HistoryListView.SelectedItem = entry;
                 }
+                UpdateStatusBar();
             });
         }
         catch
@@ -2364,6 +2419,7 @@ public partial class MainWindow : Window
                     Timestamp   = session.Timestamp,
                     FormatsText = session.FormatsText,
                     TotalSize   = session.TotalSize,
+                    Formats     = session.Formats,
                 });
             }
         }
@@ -2371,6 +2427,70 @@ public partial class MainWindow : Window
         {
             // Silently ignore load failures.
         }
+    }
+
+    // ── Format pill classification ────────────────────────────────────────────
+
+    private static bool IsImageFormat(uint id, string name)
+    {
+        // CF_BITMAP (2), CF_DIB (8), CF_DIBV5 (17), CF_DSPBITMAP (0x82)
+        if (id is 2 or 8 or 17 or 0x0082) return true;
+        var n = name.ToLowerInvariant();
+        return n.Contains("png")    || n.Contains("jpeg") || n.Contains("jpg") ||
+               n.Contains("dib")    || n.Contains("bitmap") || n.Contains("image");
+    }
+
+    private static bool IsHtmlFormat(string name) =>
+        name.Contains("html", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsRtfFormat(string name) =>
+        name.Contains("rtf", StringComparison.OrdinalIgnoreCase) ||
+        name.Contains("rich text", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsTextFormat(uint id, string name)
+    {
+        // CF_TEXT (1), CF_OEMTEXT (7), CF_UNICODETEXT (13)
+        if (id is 1 or 7 or 13) return true;
+        // Name-based: "text"-like, but not HTML or RTF (those have their own pills)
+        return name.Contains("text", StringComparison.OrdinalIgnoreCase) &&
+               !IsHtmlFormat(name) && !IsRtfFormat(name);
+    }
+
+    private static bool IsFileFormat(uint id) => id == 15; // CF_HDROP
+
+    private static IReadOnlyList<FormatPill> ComputePills(
+        IReadOnlyList<(uint FormatId, string FormatName)> formats)
+    {
+        bool hasI = false, hasT = false, hasH = false, hasR = false, hasF = false, hasO = false;
+        foreach (var (id, name) in formats)
+        {
+            if      (IsImageFormat(id, name)) hasI = true;
+            else if (IsHtmlFormat(name))      hasH = true;
+            else if (IsRtfFormat(name))       hasR = true;
+            else if (IsTextFormat(id, name))  hasT = true;
+            else if (IsFileFormat(id))        hasF = true;
+            else                              hasO = true;
+        }
+
+        var pills = new List<FormatPill>(6);
+        if (hasI) pills.Add(new FormatPill { Label = "IMG",   Background = PillBrushImage });
+        if (hasT) pills.Add(new FormatPill { Label = "TXT",   Background = PillBrushText  });
+        if (hasH) pills.Add(new FormatPill { Label = "HTML",  Background = PillBrushHtml  });
+        if (hasR) pills.Add(new FormatPill { Label = "RTF",   Background = PillBrushRtf   });
+        if (hasF) pills.Add(new FormatPill { Label = "FILE",  Background = PillBrushFile  });
+        // "OTHER" is a fallback shown only when no well-known format category was recognised.
+        if (hasO && pills.Count == 0) pills.Add(new FormatPill { Label = "OTHER", Background = PillBrushOther });
+        return pills;
+    }
+
+    private static string ComputeFormatsTooltip(
+        IReadOnlyList<(uint FormatId, string FormatName)> formats)
+    {
+        var sb = new StringBuilder();
+        sb.Append($"{formats.Count} format{(formats.Count == 1 ? "" : "s")}");
+        foreach (var (id, name) in formats)
+            sb.Append($"\n{name} ({id})");
+        return sb.ToString();
     }
 
     private void ShowHistoryPanel()

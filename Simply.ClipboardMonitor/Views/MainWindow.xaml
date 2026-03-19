@@ -41,6 +41,8 @@
                 <Separator />
                 <MenuItem Header="_Export Selected Format..." Command="{x:Static local:MainWindow.ExportCommand}" />
                 <Separator />
+                <MenuItem Header="Se_ttings..." Click="MenuItemSettings_Click" />
+                <Separator />
                 <MenuItem Header="E_xit" Click="MenuItemExit_Click" />
             </MenuItem>
             <MenuItem Header="_Clipboard" SubmenuOpened="ClipboardMenu_SubmenuOpened">

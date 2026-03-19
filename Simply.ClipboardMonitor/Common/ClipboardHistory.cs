@@ -45,45 +45,139 @@ internal static class ClipboardHistory
     // ── Public API ──────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Inserts a new session and all its format snapshots into the database.
-    /// Returns the new session ID.
+    /// Inserts a new session and all its format snapshots into the database,
+    /// then trims the oldest sessions until the entry count and approximate
+    /// database size are both within the specified limits.
     /// Intended to be called from a background thread.
     /// </summary>
-    public static long AddSession(IReadOnlyList<FormatSnapshot> snapshots, DateTime timestamp)
+    /// <returns>
+    /// The new session's row ID and a flag indicating whether any older sessions
+    /// were deleted by <see cref="TrimToLimits"/> (i.e. the history list needs refresh).
+    /// </returns>
+    public static (long SessionId, bool Trimmed) AddSession(
+        IReadOnlyList<FormatSnapshot> snapshots,
+        DateTime timestamp,
+        int  maxEntries,
+        long maxDatabaseBytes)
     {
         try
         {
             using var conn = OpenConnection(readOnly: false);
             CreateSchema(conn);
 
-            using var tx = conn.BeginTransaction();
-            try
+            long sessionId;
+            using (var tx = conn.BeginTransaction())
             {
-                var formatsText = BuildFormatsText(snapshots);
-                var totalSize   = snapshots.Sum(s => s.OriginalSize);
-                var sessionId   = InsertSession(conn, timestamp, formatsText, totalSize);
-
-                foreach (var snap in snapshots)
+                try
                 {
-                    var formatDbId = EnsureClipboardFormat(conn, snap.FormatId, snap.FormatName);
-                    long? contentId = null;
+                    var formatsText = BuildFormatsText(snapshots);
+                    var totalSize   = snapshots.Sum(s => s.OriginalSize);
+                    sessionId       = InsertSession(conn, timestamp, formatsText, totalSize);
 
-                    if (snap.Data is { Length: > 0 })
+                    foreach (var snap in snapshots)
                     {
-                        var hash = ComputeHash(snap.Data);
-                        contentId = EnsureContent(conn, hash, snap.Data, snap.OriginalSize);
+                        var formatDbId = EnsureClipboardFormat(conn, snap.FormatId, snap.FormatName);
+                        long? contentId = null;
+
+                        if (snap.Data is { Length: > 0 })
+                        {
+                            var hash = ComputeHash(snap.Data);
+                            contentId = EnsureContent(conn, hash, snap.Data, snap.OriginalSize);
+                        }
+
+                        InsertSessionItem(conn, sessionId, snap.Ordinal, formatDbId, contentId, snap.HandleType);
                     }
 
-                    InsertSessionItem(conn, sessionId, snap.Ordinal, formatDbId, contentId, snap.HandleType);
+                    tx.Commit();
                 }
-
-                tx.Commit();
-                return sessionId;
+                catch
+                {
+                    tx.Rollback();
+                    throw;
+                }
             }
-            catch
+
+            // Trim outside the write transaction; VACUUM cannot run inside one.
+            var trimmed = TrimToLimits(conn, maxEntries, maxDatabaseBytes);
+            if (trimmed)
             {
-                tx.Rollback();
-                throw;
+                using var vac = conn.CreateCommand();
+                vac.CommandText = "VACUUM";
+                vac.ExecuteNonQuery();
+            }
+
+            return (sessionId, trimmed);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    /// <summary>Returns the history database file size in bytes, or 0 if it does not exist.</summary>
+    public static long GetDatabaseFileSize()
+    {
+        var path = DbPath;
+        return File.Exists(path) ? new FileInfo(path).Length : 0L;
+    }
+
+    /// <summary>
+    /// Applies <paramref name="maxEntries"/> and <paramref name="maxDatabaseBytes"/> limits
+    /// to an existing database, then VACUUMs if anything was removed.
+    /// Returns <see langword="true"/> if any sessions were deleted.
+    /// No-op (returns <see langword="false"/>) when the database does not exist.
+    /// Intended to be called from a background thread.
+    /// </summary>
+    public static bool EnforceLimits(int maxEntries, long maxDatabaseBytes)
+    {
+        if (!File.Exists(DbPath))
+            return false;
+
+        try
+        {
+            using var conn = OpenConnection(readOnly: false);
+            var removed = TrimToLimits(conn, maxEntries, maxDatabaseBytes);
+            if (removed)
+            {
+                using var vac = conn.CreateCommand();
+                vac.CommandText = "VACUUM";
+                vac.ExecuteNonQuery();
+            }
+            return removed;
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    /// <summary>
+    /// Deletes all sessions, items, and content blobs, then compacts the file with VACUUM.
+    /// Safe to call when the database does not yet exist.
+    /// </summary>
+    public static void ClearHistory()
+    {
+        if (!File.Exists(DbPath))
+            return;
+
+        try
+        {
+            using var conn = OpenConnection(readOnly: false);
+
+            using (var cmd = conn.CreateCommand())
+            {
+                cmd.CommandText = """
+                    DELETE FROM session_items;
+                    DELETE FROM sessions;
+                    DELETE FROM clipboard_contents;
+                    """;
+                cmd.ExecuteNonQuery();
+            }
+
+            using (var cmd = conn.CreateCommand())
+            {
+                cmd.CommandText = "VACUUM";
+                cmd.ExecuteNonQuery();
             }
         }
         finally
@@ -318,6 +412,101 @@ internal static class ClipboardHistory
     {
         var joined = string.Join(", ", snapshots.Select(s => s.FormatName));
         return joined.Length > 80 ? joined[..77] + "..." : joined;
+    }
+
+    // ── Limit enforcement ────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Deletes oldest sessions (and orphaned content blobs) until both the
+    /// session count and the approximate database size are within limits.
+    /// Returns true if anything was deleted (caller should VACUUM afterwards).
+    /// </summary>
+    private static bool TrimToLimits(SqliteConnection conn, int maxEntries, long maxDatabaseBytes)
+    {
+        var deleted = false;
+
+        // --- count limit ---
+        if (maxEntries > 0)
+        {
+            var count = GetSessionCount(conn);
+            if (count > maxEntries)
+            {
+                using var tx = conn.BeginTransaction();
+                DeleteOldestSessions(conn, (int)(count - maxEntries));
+                DeleteOrphanedContent(conn);
+                tx.Commit();
+                deleted = true;
+            }
+        }
+
+        // --- size limit ---
+        if (maxDatabaseBytes > 0)
+        {
+            while (GetStoredBlobBytes(conn) > maxDatabaseBytes)
+            {
+                if (GetSessionCount(conn) <= 1) break;  // always keep at least 1 session
+
+                using var tx = conn.BeginTransaction();
+                DeleteOldestSessions(conn, 1);
+                DeleteOrphanedContent(conn);
+                tx.Commit();
+                deleted = true;
+            }
+        }
+
+        return deleted;
+    }
+
+    private static long GetSessionCount(SqliteConnection conn)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT COUNT(*) FROM sessions";
+        return (long)cmd.ExecuteScalar()!;
+    }
+
+    /// <summary>
+    /// Returns the total number of compressed bytes stored in <c>clipboard_contents.data</c>.
+    /// Decreases immediately after a DELETE + COMMIT, making it reliable for size-limit
+    /// enforcement without needing a VACUUM first.
+    /// </summary>
+    private static long GetStoredBlobBytes(SqliteConnection conn)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT COALESCE(SUM(LENGTH(data)), 0) FROM clipboard_contents";
+        return (long)cmd.ExecuteScalar()!;
+    }
+
+    private static void DeleteOldestSessions(SqliteConnection conn, int count)
+    {
+        using var delItems = conn.CreateCommand();
+        delItems.CommandText = """
+            DELETE FROM session_items
+            WHERE session_id IN (SELECT id FROM sessions ORDER BY id ASC LIMIT @n)
+            """;
+        delItems.Parameters.AddWithValue("@n", count);
+        delItems.ExecuteNonQuery();
+
+        using var delSessions = conn.CreateCommand();
+        delSessions.CommandText = """
+            DELETE FROM sessions
+            WHERE id IN (SELECT id FROM sessions ORDER BY id ASC LIMIT @n)
+            """;
+        delSessions.Parameters.AddWithValue("@n", count);
+        delSessions.ExecuteNonQuery();
+    }
+
+    private static void DeleteOrphanedContent(SqliteConnection conn)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            DELETE FROM clipboard_contents
+            WHERE id NOT IN (
+                SELECT DISTINCT clipboard_content_id
+                FROM   session_items
+                WHERE  clipboard_content_id IS NOT NULL
+            )
+            """;
+        cmd.ExecuteNonQuery();
     }
 
     private static SqliteConnection OpenConnection(bool readOnly)

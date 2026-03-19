@@ -110,6 +110,12 @@ public partial class MainWindow : Window
     private uint    _currentFormatId;
     private string  _currentFormatName = string.Empty;
 
+    // History limits (kept in sync with UserPreferences)
+    private const int DefaultHistoryMaxEntries = 100;
+    private const int DefaultHistoryMaxSizeMb  = 100;
+    private int _historyMaxEntries = DefaultHistoryMaxEntries;
+    private int _historyMaxSizeMb  = DefaultHistoryMaxSizeMb;
+
     // History state
     private bool _isTrackingHistory;
     private readonly ObservableCollection<HistoryItem> _historyItems = [];
@@ -120,10 +126,12 @@ public partial class MainWindow : Window
     // taken at the moment monitoring was disabled (or on a manual refresh).
     // Used instead of the live clipboard so format previews still work.
     private Dictionary<string, FormatSnapshot>? _staticSnapshot;
-    // Single-reader channel that serialises all DB writes through one background consumer.
-    private readonly Channel<(IReadOnlyList<FormatSnapshot> Snapshots, DateTime Timestamp)> _historyChannel =
-        Channel.CreateUnbounded<(IReadOnlyList<FormatSnapshot>, DateTime)>(
-            new UnboundedChannelOptions { SingleReader = true });
+    // Channel that serialises all DB operations through one background consumer.
+    // Each item is an Action so both session writes and limit-enforcement can share the queue.
+    // Note: SingleReader is intentionally omitted — SingleConsumerUnboundedChannel does not
+    // implement ChannelReader.Count, which is needed to detect whether the queue is empty.
+    private readonly Channel<Action> _historyChannel =
+        Channel.CreateUnbounded<Action>();
 
     private sealed class HistoryItem
     {
@@ -1390,6 +1398,59 @@ public partial class MainWindow : Window
         ShellHelper.OpenUrl("https://github.com/dbakuntsev/simply.clipboard-monitor/issues");
     }
 
+    private void MenuItemSettings_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new SettingsDialog(_historyMaxEntries, _historyMaxSizeMb) { Owner = this };
+        var result = dlg.ShowDialog();
+
+        if (dlg.HistoryWasCleared)
+        {
+            _historyItems.Clear();
+            if (_historySnapshots != null)
+            {
+                _historySnapshots = null;
+                RefreshFormats();
+            }
+        }
+
+        if (result == true)
+        {
+            _historyMaxEntries = dlg.MaxEntries;
+            _historyMaxSizeMb  = dlg.MaxSizeMb;
+            SavePreferences();
+
+            // Enforce new limits against any existing database, regardless of whether
+            // history tracking is currently on (old data may still need trimming).
+            // Skip if the channel already has pending items: the consumer will call
+            // TrimToLimits() itself as part of processing each AddSession, so there
+            // is no need to queue a redundant standalone enforcement pass.
+            if (_historyChannel.Reader.Count == 0)
+            {
+                var maxEntries      = _historyMaxEntries;
+                var maxBytes        = (long)_historyMaxSizeMb * 1024L * 1024L;
+                var trackingHistory = _isTrackingHistory;
+                _historyChannel.Writer.TryWrite(() =>
+                {
+                    var removed = ClipboardHistory.EnforceLimits(maxEntries, maxBytes);
+                    // Only reload the UI list if rows were actually deleted and the
+                    // history panel is visible — otherwise nothing changed.
+                    if (removed && trackingHistory)
+                    {
+                        Dispatcher.InvokeAsync(() =>
+                        {
+                            if (_historySnapshots != null)
+                            {
+                                _historySnapshots = null;
+                                RefreshFormats();
+                            }
+                            LoadHistoryFromDatabase();
+                        });
+                    }
+                });
+            }
+        }
+    }
+
     private void MenuItemAbout_Click(object sender, RoutedEventArgs e)
     {
         new AboutDialog { Owner = this }.ShowDialog();
@@ -1894,6 +1955,8 @@ public partial class MainWindow : Window
 
             _isMonitoring      = preferences.MonitorChanges;
             _isTrackingHistory = preferences.TrackHistory && _isMonitoring;
+            _historyMaxEntries = preferences.HistoryMaxEntries > 0 ? preferences.HistoryMaxEntries : DefaultHistoryMaxEntries;
+            _historyMaxSizeMb  = preferences.HistoryMaxSizeMb  > 0 ? preferences.HistoryMaxSizeMb  : DefaultHistoryMaxSizeMb;
         }
         catch
         {
@@ -1902,6 +1965,8 @@ public partial class MainWindow : Window
             _storedColumnPreferences = [];
             _isMonitoring            = true;
             _isTrackingHistory       = false;
+            _historyMaxEntries       = DefaultHistoryMaxEntries;
+            _historyMaxSizeMb        = DefaultHistoryMaxSizeMb;
         }
     }
 
@@ -1918,11 +1983,13 @@ public partial class MainWindow : Window
 
             var preferences = new UserPreferences
             {
-                SortProperty   = _currentSortProperty,
-                SortDirection  = _currentSortDirection.ToString(),
-                FormatColumns  = CaptureFormatColumnPreferences(),
-                MonitorChanges = _isMonitoring,
-                TrackHistory   = _isTrackingHistory,
+                SortProperty      = _currentSortProperty,
+                SortDirection     = _currentSortDirection.ToString(),
+                FormatColumns     = CaptureFormatColumnPreferences(),
+                MonitorChanges    = _isMonitoring,
+                TrackHistory      = _isTrackingHistory,
+                HistoryMaxEntries = _historyMaxEntries,
+                HistoryMaxSizeMb  = _historyMaxSizeMb,
             };
 
             var json = JsonSerializer.Serialize(preferences, new JsonSerializerOptions { WriteIndented = true });
@@ -2181,7 +2248,7 @@ public partial class MainWindow : Window
         if (NativeMethods.GetClipboardSequenceNumber() != seqAtArrival)
             return;
 
-        _historyChannel.Writer.TryWrite((snapshots, timestamp));
+        _historyChannel.Writer.TryWrite(() => WriteHistorySession(snapshots, timestamp));
     }
 
     /// <summary>
@@ -2229,14 +2296,14 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Long-running background consumer: drains the history channel one item at a time,
-    /// guaranteeing writes are serialised in arrival order with no DB contention.
+    /// Long-running background consumer: drains the history channel one action at a time,
+    /// guaranteeing all DB operations are serialised in arrival order with no contention.
     /// </summary>
     private async Task ProcessHistoryChannelAsync()
     {
-        await foreach (var (snapshots, timestamp) in _historyChannel.Reader.ReadAllAsync())
+        await foreach (var action in _historyChannel.Reader.ReadAllAsync())
         {
-            WriteHistorySession(snapshots, timestamp);
+            action();
         }
     }
 
@@ -2248,21 +2315,33 @@ public partial class MainWindow : Window
     {
         try
         {
-            var sessionId   = ClipboardHistory.AddSession(snapshots, timestamp);
+            var maxDatabaseBytes = (long)_historyMaxSizeMb * 1024L * 1024L;
+            var (sessionId, trimmed) = ClipboardHistory.AddSession(snapshots, timestamp, _historyMaxEntries, maxDatabaseBytes);
             var formatsText = ClipboardHistory.BuildFormatsText(snapshots);
             var totalSize   = snapshots.Sum(s => s.OriginalSize);
 
             Dispatcher.InvokeAsync(() =>
             {
-                var entry = new HistoryItem
+                if (trimmed)
                 {
-                    SessionId   = sessionId,
-                    Timestamp   = timestamp,
-                    FormatsText = formatsText,
-                    TotalSize   = totalSize,
-                };
-                _historyItems.Insert(0, entry);
-                HistoryListView.SelectedItem = entry;
+                    // Old sessions were deleted — reload the list so stale entries
+                    // are removed, then select the newly-added entry at the top.
+                    LoadHistoryFromDatabase();
+                    if (_historyItems.Count > 0)
+                        HistoryListView.SelectedItem = _historyItems[0];
+                }
+                else
+                {
+                    var entry = new HistoryItem
+                    {
+                        SessionId   = sessionId,
+                        Timestamp   = timestamp,
+                        FormatsText = formatsText,
+                        TotalSize   = totalSize,
+                    };
+                    _historyItems.Insert(0, entry);
+                    HistoryListView.SelectedItem = entry;
+                }
             });
         }
         catch

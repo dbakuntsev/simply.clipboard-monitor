@@ -6,6 +6,7 @@ internal sealed class UserPreferences
     public string? SortDirection { get; set; }
     public List<FormatColumnPreference>? FormatColumns { get; set; }
     public bool MonitorChanges { get; set; } = true;
+    public bool TrackHistory { get; set; }
 }
 
 internal sealed class FormatColumnPreference

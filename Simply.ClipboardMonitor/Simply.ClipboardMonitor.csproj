@@ -22,6 +22,7 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.0" />
+    <PackageReference Include="ZstdSharp.Port" Version="0.7.3" />
   </ItemGroup>
 
 </Project>

@@ -1,5 +1,6 @@
 ﻿using Microsoft.Data.Sqlite;
 using Microsoft.Win32;
+using System.Threading.Channels;
 using Simply.ClipboardMonitor.Common;
 using Simply.ClipboardMonitor.Models;
 using System.Buffers.Binary;
@@ -109,6 +110,32 @@ public partial class MainWindow : Window
     private uint    _currentFormatId;
     private string  _currentFormatName = string.Empty;
 
+    // History state
+    private bool _isTrackingHistory;
+    private readonly ObservableCollection<HistoryItem> _historyItems = [];
+    // Non-null when showing a history session (maps format name → snapshot).
+    // Null means live-clipboard mode.
+    private IReadOnlyDictionary<string, FormatSnapshot>? _historySnapshots;
+    // Single-reader channel that serialises all DB writes through one background consumer.
+    private readonly Channel<(IReadOnlyList<FormatSnapshot> Snapshots, DateTime Timestamp)> _historyChannel =
+        Channel.CreateUnbounded<(IReadOnlyList<FormatSnapshot>, DateTime)>(
+            new UnboundedChannelOptions { SingleReader = true });
+
+    private sealed class HistoryItem
+    {
+        public required long     SessionId   { get; init; }
+        public required DateTime Timestamp   { get; init; }
+        public required string   FormatsText { get; init; }
+        public required long     TotalSize   { get; init; }
+        public string DateText => Timestamp.ToString("yyyy-MM-dd HH:mm:ss");
+        public string SizeText => TotalSize switch
+        {
+            >= 1024L * 1024 => $"{TotalSize / (1024.0 * 1024):F1} MB",
+            >= 1024         => $"{TotalSize / 1024.0:F1} KB",
+            _               => $"{TotalSize} B",
+        };
+    }
+
     public MainWindow()
     {
         // Required for legacy OEM/ANSI code pages (e.g. CP437 used by CF_OEMTEXT) which
@@ -119,10 +146,15 @@ public partial class MainWindow : Window
         CommandBindings.Add(new CommandBinding(LoadCommand, LoadCommand_Executed));
         CommandBindings.Add(new CommandBinding(SaveCommand, SaveCommand_Executed));
         CommandBindings.Add(new CommandBinding(ExportCommand, ExportCommand_Executed, ExportCommand_CanExecute));
+        _ = Task.Run(ProcessHistoryChannelAsync);
         _isUiReady = true;
-        FormatListBox.ItemsSource = _formats;
+        FormatListBox.ItemsSource  = _formats;
+        HistoryListView.ItemsSource = _historyItems;
         LoadPreferences();
         MenuItemMonitorChanges.IsChecked = _isMonitoring;
+        MenuItemTrackHistory.IsChecked   = _isTrackingHistory;
+        if (_isTrackingHistory)
+            ShowHistoryPanel();
         UpdateStatusBar();
         ApplyFormatColumnPreferences();
         FormatListBox.AddHandler(GridViewColumnHeader.ClickEvent, new RoutedEventHandler(FormatListBox_OnColumnHeaderClick));
@@ -144,6 +176,9 @@ public partial class MainWindow : Window
         }
 
         RefreshFormats();
+
+        if (_isTrackingHistory)
+            LoadHistoryFromDatabase();
     }
 
     protected override void OnClosed(EventArgs e)
@@ -155,6 +190,7 @@ public partial class MainWindow : Window
             _hwndSource = null;
         }
 
+        _historyChannel.Writer.TryComplete();
         SavePreferences();
         base.OnClosed(e);
     }
@@ -165,7 +201,13 @@ public partial class MainWindow : Window
         {
             if (_isMonitoring)
             {
+                // Read the sequence number before RefreshFormats() so that any
+                // GetClipboardData call (including delayed-rendering triggers) that
+                // increments it during the refresh is detectable afterwards.
+                var seqAtArrival = NativeMethods.GetClipboardSequenceNumber();
                 RefreshFormats();
+                if (_isTrackingHistory)
+                    CaptureHistorySession(seqAtArrival);
             }
             handled = true;
         }
@@ -175,6 +217,7 @@ public partial class MainWindow : Window
 
     private void RefreshFormats()
     {
+        _historySnapshots = null;   // switch to live-clipboard mode
         InitializePreviewState();
 
         var selectedId = (FormatListBox.SelectedItem as ClipboardFormatItem)?.FormatId;
@@ -221,19 +264,37 @@ public partial class MainWindow : Window
         BitmapSource? imagePreview = null;
         string imageFailureMessage = "Image preview unavailable for this format.";
 
-        if (!TryOpenClipboard(IntPtr.Zero))
+        if (_historySnapshots != null)
         {
-            SetHexPreviewUnavailable("Unable to open clipboard.");
-            return;
+            // History playback mode — bytes come from the in-memory snapshot dict.
+            if (_historySnapshots.TryGetValue(item.Name, out var snapshot))
+            {
+                bytes = snapshot.Data;
+                if (bytes == null && snapshot.HandleType != "none")
+                    hexFailureMessage = "No data was captured for this format.";
+            }
+            else
+            {
+                hexFailureMessage = "Format data not found in the selected history entry.";
+            }
         }
+        else
+        {
+            // Live mode — read from the clipboard.
+            if (!TryOpenClipboard(IntPtr.Zero))
+            {
+                SetHexPreviewUnavailable("Unable to open clipboard.");
+                return;
+            }
 
-        try
-        {
-            TryReadClipboardDataBytes(item.FormatId, out bytes, out hexFailureMessage);
-        }
-        finally
-        {
-            NativeMethods.CloseClipboard();
+            try
+            {
+                TryReadClipboardDataBytes(item.FormatId, out bytes, out hexFailureMessage);
+            }
+            finally
+            {
+                NativeMethods.CloseClipboard();
+            }
         }
 
         _currentFormatBytes = bytes;
@@ -1258,7 +1319,8 @@ public partial class MainWindow : Window
 
     private void ClipboardMenu_SubmenuOpened(object sender, RoutedEventArgs e)
     {
-        MenuItemClear.IsEnabled = NativeMethods.CountClipboardFormats() > 0;
+        MenuItemClear.IsEnabled        = NativeMethods.CountClipboardFormats() > 0;
+        MenuItemTrackHistory.IsEnabled = _isMonitoring;
     }
 
     private void MenuItemClear_Click(object sender, RoutedEventArgs e)
@@ -1272,12 +1334,21 @@ public partial class MainWindow : Window
     {
         _isMonitoring = MenuItemMonitorChanges.IsChecked;
         UpdateStatusBar();
+
+        // History tracking requires monitoring — stop it if monitoring is turned off.
+        if (!_isMonitoring && _isTrackingHistory)
+        {
+            _isTrackingHistory               = false;
+            MenuItemTrackHistory.IsChecked   = false;
+            HideHistoryPanel();
+            _historyItems.Clear();
+            _historySnapshots = null;
+        }
+
         SavePreferences();
 
         if (_isMonitoring)
-        {
             RefreshFormats();
-        }
     }
 
     private void MenuItemSubmitFeedback_Click(object sender, RoutedEventArgs e)
@@ -1787,14 +1858,16 @@ public partial class MainWindow : Window
                 }
             }
 
-            _isMonitoring = preferences.MonitorChanges;
+            _isMonitoring      = preferences.MonitorChanges;
+            _isTrackingHistory = preferences.TrackHistory && _isMonitoring;
         }
         catch
         {
-            _currentSortProperty = DefaultSortProperty;
-            _currentSortDirection = ListSortDirection.Ascending;
+            _currentSortProperty     = DefaultSortProperty;
+            _currentSortDirection    = ListSortDirection.Ascending;
             _storedColumnPreferences = [];
-            _isMonitoring = true;
+            _isMonitoring            = true;
+            _isTrackingHistory       = false;
         }
     }
 
@@ -1811,10 +1884,11 @@ public partial class MainWindow : Window
 
             var preferences = new UserPreferences
             {
-                SortProperty = _currentSortProperty,
-                SortDirection = _currentSortDirection.ToString(),
-                FormatColumns = CaptureFormatColumnPreferences(),
-                MonitorChanges = _isMonitoring
+                SortProperty   = _currentSortProperty,
+                SortDirection  = _currentSortDirection.ToString(),
+                FormatColumns  = CaptureFormatColumnPreferences(),
+                MonitorChanges = _isMonitoring,
+                TrackHistory   = _isTrackingHistory,
             };
 
             var json = JsonSerializer.Serialize(preferences, new JsonSerializerOptions { WriteIndented = true });
@@ -1974,6 +2048,184 @@ public partial class MainWindow : Window
     {
         var appData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         return Path.Combine(appData, "Simply.ClipboardMonitor", PreferencesFileName);
+    }
+
+    // ── Clipboard History ────────────────────────────────────────────────────
+
+    private void MenuItemTrackHistory_Click(object sender, RoutedEventArgs e)
+    {
+        _isTrackingHistory = MenuItemTrackHistory.IsChecked;
+
+        if (_isTrackingHistory)
+        {
+            ShowHistoryPanel();
+            LoadHistoryFromDatabase();
+        }
+        else
+        {
+            HideHistoryPanel();
+            _historyItems.Clear();
+
+            if (_historySnapshots != null)
+            {
+                _historySnapshots = null;
+                RefreshFormats();
+            }
+        }
+
+        SavePreferences();
+    }
+
+    private void HistoryListView_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (HistoryListView.SelectedItem is not HistoryItem entry)
+            return;
+
+        List<FormatSnapshot> snapshots;
+        try
+        {
+            snapshots = ClipboardHistory.LoadSessionFormats(entry.SessionId);
+        }
+        catch
+        {
+            return;
+        }
+
+        _historySnapshots = snapshots.ToDictionary(s => s.FormatName, StringComparer.Ordinal);
+        InitializePreviewState();
+        _formats.Clear();
+
+        foreach (var snap in snapshots)
+        {
+            var contentSize      = snap.OriginalSize > 0 ? snap.OriginalSize.ToString("N0") : "n/a";
+            var contentSizeValue = snap.OriginalSize > 0 ? snap.OriginalSize : -1L;
+            _formats.Add(new ClipboardFormatItem(snap.Ordinal, snap.FormatId, snap.FormatName, contentSize, contentSizeValue));
+        }
+    }
+
+    private void CaptureHistorySession(uint seqAtArrival)
+    {
+        // _formats was just populated by RefreshFormats() — copy it before opening the
+        // clipboard so we never call EnumClipboardFormats a second time.
+        if (_formats.Count == 0)
+            return;
+
+        var timestamp   = DateTime.Now;
+        var formatItems = _formats.ToList();  // snapshot on UI thread
+
+        if (!TryOpenClipboard(IntPtr.Zero))
+            return;
+
+        var snapshots = new List<FormatSnapshot>(formatItems.Count);
+        try
+        {
+            foreach (var item in formatItems)
+            {
+                var handleType = GetHandleType(item.FormatId);
+                byte[]? data   = null;
+                if (handleType != "none")
+                    TryReadClipboardDataBytes(item.FormatId, out data, out _);
+
+                // Prefer the actual byte length; fall back to the size already measured
+                // by RefreshFormats for formats whose data could not be read as a byte[].
+                var originalSize = data?.LongLength
+                    ?? (item.ContentSizeValue >= 0 ? item.ContentSizeValue : 0L);
+
+                snapshots.Add(new FormatSnapshot(item.Ordinal, item.FormatId, item.Name,
+                                                 handleType, data, originalSize));
+            }
+        }
+        finally
+        {
+            NativeMethods.CloseClipboard();
+        }
+
+        // If the sequence number advanced since WM_CLIPBOARDUPDATE arrived, a
+        // delayed-rendering provider rendered data and posted a fresh
+        // WM_CLIPBOARDUPDATE.  Skip this capture; the next message will capture
+        // the fully-rendered clipboard and avoids creating a duplicate entry.
+        if (NativeMethods.GetClipboardSequenceNumber() != seqAtArrival)
+            return;
+
+        _historyChannel.Writer.TryWrite((snapshots, timestamp));
+    }
+
+    /// <summary>
+    /// Long-running background consumer: drains the history channel one item at a time,
+    /// guaranteeing writes are serialised in arrival order with no DB contention.
+    /// </summary>
+    private async Task ProcessHistoryChannelAsync()
+    {
+        await foreach (var (snapshots, timestamp) in _historyChannel.Reader.ReadAllAsync())
+        {
+            WriteHistorySession(snapshots, timestamp);
+        }
+    }
+
+    /// <summary>
+    /// Called by the channel consumer on a background thread.
+    /// Compresses blobs, writes to history.db, then posts the new list entry to the UI.
+    /// </summary>
+    private void WriteHistorySession(IReadOnlyList<FormatSnapshot> snapshots, DateTime timestamp)
+    {
+        try
+        {
+            var sessionId   = ClipboardHistory.AddSession(snapshots, timestamp);
+            var formatsText = ClipboardHistory.BuildFormatsText(snapshots);
+            var totalSize   = snapshots.Sum(s => s.OriginalSize);
+
+            Dispatcher.InvokeAsync(() =>
+            {
+                var entry = new HistoryItem
+                {
+                    SessionId   = sessionId,
+                    Timestamp   = timestamp,
+                    FormatsText = formatsText,
+                    TotalSize   = totalSize,
+                };
+                _historyItems.Insert(0, entry);
+                HistoryListView.SelectedItem = entry;
+            });
+        }
+        catch
+        {
+            // Background write failure — silently ignored.
+        }
+    }
+
+    private void LoadHistoryFromDatabase()
+    {
+        try
+        {
+            var sessions = ClipboardHistory.LoadSessions();
+            _historyItems.Clear();
+            foreach (var session in sessions)
+            {
+                _historyItems.Add(new HistoryItem
+                {
+                    SessionId   = session.SessionId,
+                    Timestamp   = session.Timestamp,
+                    FormatsText = session.FormatsText,
+                    TotalSize   = session.TotalSize,
+                });
+            }
+        }
+        catch
+        {
+            // Silently ignore load failures.
+        }
+    }
+
+    private void ShowHistoryPanel()
+    {
+        LeftPanelGrid.RowDefinitions[1].Height = new GridLength(5);
+        LeftPanelGrid.RowDefinitions[2].Height = new GridLength(180);
+    }
+
+    private void HideHistoryPanel()
+    {
+        LeftPanelGrid.RowDefinitions[1].Height = new GridLength(0);
+        LeftPanelGrid.RowDefinitions[2].Height = new GridLength(0);
     }
 
 }

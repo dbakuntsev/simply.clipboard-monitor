@@ -117,4 +117,7 @@ internal static class NativeMethods
 
     [DllImport("gdi32.dll", SetLastError = true)]
     internal static extern bool DeleteObject(IntPtr ho);
+
+    [DllImport("user32.dll")]
+    internal static extern uint GetClipboardSequenceNumber();
 }

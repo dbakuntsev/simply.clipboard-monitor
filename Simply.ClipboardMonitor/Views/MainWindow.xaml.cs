@@ -114,7 +114,7 @@ public partial class MainWindow : Window
     private bool _isTrackingHistory;
     private readonly ObservableCollection<HistoryItem> _historyItems = [];
     // Non-null when showing a history session (maps format name → snapshot).
-    // Null means live-clipboard mode.
+    // Null means the live clipboard or the static snapshot is used instead.
     private IReadOnlyDictionary<string, FormatSnapshot>? _historySnapshots;
     // Non-null when monitoring is off: holds a byte-level copy of every format
     // taken at the moment monitoring was disabled (or on a manual refresh).
@@ -2139,8 +2139,8 @@ public partial class MainWindow : Window
 
     private void CaptureHistorySession(uint seqAtArrival)
     {
-        // _formats was just populated by RefreshFormats() — copy it before opening the
-        // clipboard so we never call EnumClipboardFormats a second time.
+        // _formats was just populated by RefreshFormats() — snapshot it on the UI thread
+        // before opening the clipboard so we do not need to enumerate formats again.
         if (_formats.Count == 0)
             return;
 
@@ -2187,7 +2187,8 @@ public partial class MainWindow : Window
     /// <summary>
     /// Reads the raw bytes for every format currently in <see cref="_formats"/> and
     /// stores them in <see cref="_staticSnapshot"/> so that format previews remain
-    /// functional after monitoring is turned off.
+    /// functional while monitoring is off (called on startup, on manual refresh, and
+    /// whenever monitoring is disabled).
     /// </summary>
     private void CaptureStaticSnapshot()
     {

@@ -116,6 +116,10 @@ public partial class MainWindow : Window
     // Non-null when showing a history session (maps format name → snapshot).
     // Null means live-clipboard mode.
     private IReadOnlyDictionary<string, FormatSnapshot>? _historySnapshots;
+    // Non-null when monitoring is off: holds a byte-level copy of every format
+    // taken at the moment monitoring was disabled (or on a manual refresh).
+    // Used instead of the live clipboard so format previews still work.
+    private Dictionary<string, FormatSnapshot>? _staticSnapshot;
     // Single-reader channel that serialises all DB writes through one background consumer.
     private readonly Channel<(IReadOnlyList<FormatSnapshot> Snapshots, DateTime Timestamp)> _historyChannel =
         Channel.CreateUnbounded<(IReadOnlyList<FormatSnapshot>, DateTime)>(
@@ -176,6 +180,9 @@ public partial class MainWindow : Window
         }
 
         RefreshFormats();
+
+        if (!_isMonitoring)
+            CaptureStaticSnapshot();
 
         if (_isTrackingHistory)
             LoadHistoryFromDatabase();
@@ -276,6 +283,22 @@ public partial class MainWindow : Window
             else
             {
                 hexFailureMessage = "Format data not found in the selected history entry.";
+            }
+        }
+        else if (_staticSnapshot != null)
+        {
+            // Monitoring-off mode — bytes come from the snapshot taken when monitoring
+            // was disabled (or on the last manual refresh), so the clipboard does not
+            // need to be opened and previews stay consistent with the displayed formats.
+            if (_staticSnapshot.TryGetValue(item.Name, out var snapshot))
+            {
+                bytes = snapshot.Data;
+                if (bytes == null && snapshot.HandleType != "none")
+                    hexFailureMessage = "No data was captured for this format.";
+            }
+            else
+            {
+                hexFailureMessage = "Format data not found in the static snapshot.";
             }
         }
         else
@@ -1285,6 +1308,7 @@ public partial class MainWindow : Window
     private void RefreshClipboardCommand_Executed(object sender, ExecutedRoutedEventArgs e)
     {
         RefreshFormats();
+        CaptureStaticSnapshot();
     }
 
     private void RefreshClipboardCommand_CanExecute(object sender, CanExecuteRoutedEventArgs e)
@@ -1327,7 +1351,10 @@ public partial class MainWindow : Window
     {
         Clipboard.Clear();
         if (!_isMonitoring)
+        {
             RefreshFormats();
+            CaptureStaticSnapshot();
+        }
     }
 
     private void MenuItemMonitorChanges_Click(object sender, RoutedEventArgs e)
@@ -1348,7 +1375,14 @@ public partial class MainWindow : Window
         SavePreferences();
 
         if (_isMonitoring)
+        {
+            _staticSnapshot = null;
             RefreshFormats();
+        }
+        else
+        {
+            CaptureStaticSnapshot();
+        }
     }
 
     private void MenuItemSubmitFeedback_Click(object sender, RoutedEventArgs e)
@@ -2148,6 +2182,49 @@ public partial class MainWindow : Window
             return;
 
         _historyChannel.Writer.TryWrite((snapshots, timestamp));
+    }
+
+    /// <summary>
+    /// Reads the raw bytes for every format currently in <see cref="_formats"/> and
+    /// stores them in <see cref="_staticSnapshot"/> so that format previews remain
+    /// functional after monitoring is turned off.
+    /// </summary>
+    private void CaptureStaticSnapshot()
+    {
+        if (_formats.Count == 0)
+        {
+            _staticSnapshot = null;
+            return;
+        }
+
+        var formatItems = _formats.ToList();
+
+        if (!TryOpenClipboard(IntPtr.Zero))
+            return;
+
+        var snapshot = new Dictionary<string, FormatSnapshot>(StringComparer.Ordinal);
+        try
+        {
+            foreach (var item in formatItems)
+            {
+                var handleType = GetHandleType(item.FormatId);
+                byte[]? data   = null;
+                if (handleType != "none")
+                    TryReadClipboardDataBytes(item.FormatId, out data, out _);
+
+                var originalSize = data?.LongLength
+                    ?? (item.ContentSizeValue >= 0 ? item.ContentSizeValue : 0L);
+
+                snapshot[item.Name] = new FormatSnapshot(item.Ordinal, item.FormatId, item.Name,
+                                                         handleType, data, originalSize);
+            }
+        }
+        finally
+        {
+            NativeMethods.CloseClipboard();
+        }
+
+        _staticSnapshot = snapshot;
     }
 
     /// <summary>

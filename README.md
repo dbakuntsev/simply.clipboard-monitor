@@ -7,9 +7,11 @@ It shows:
 - Raw bytes as a hex dump (when the format is byte-addressable).
 - Decoded text preview (for text-like formats), with encoding detection and a manual encoding selector.
 - Image preview (for image-like formats).
+- A scrollable history of past clipboard changes, with per-session format previews.
 
-![Screenshot](.github/screenshots/demo1.png)
-![Screenshot](.github/screenshots/demo2.png)
+| Screenshot: Basic operation, HEX Preview | Screenshot: History Tracking, Image Preview |
+|:----------------------------------------:|:-------------------------------------------:|
+|![Screenshot of Basic operation, HEX Preview](.github/screenshots/demo1.png)|![Screenshot of History Tracking, Image Preview](.github/screenshots/demo2.png)|
 
 ## Download Binaries
 
@@ -28,6 +30,7 @@ The app is designed as a clipboard debugging and inspection utility for software
 - Inspect raw clipboard payloads via hex rows and offsets.
 - Quickly sanity-check text encoding behavior (`CF_TEXT`, `CF_OEMTEXT`, `CF_UNICODETEXT`).
 - Preview clipboard images and verify basic rendering.
+- Browse and replay clipboard history — inspect any past clipboard state in full detail.
 - Save a clipboard snapshot to a `.clipdb` file for later analysis or sharing.
 - Export an individual clipboard format as text, image, or raw binary file.
 
@@ -83,13 +86,59 @@ Clipboard change monitoring is **enabled by default**. When active, the format l
 
 ### Turning monitoring ON and OFF
 
-Use **Clipboard → Monitor Changes** in the menu bar to toggle monitoring on or off. 
+Use **Clipboard → Monitor Changes** in the menu bar to toggle monitoring on or off.
 
 The menu item displays a checkmark and the status bar at the bottom shows "Monitoring..." while monitoring is active.
 
+When monitoring is turned off, a full snapshot of all current clipboard format data is taken automatically so that format previews remain functional even when the clipboard contents have since changed.
+
 ### Persisted preference
 
-The monitoring state is saved automatically when changed and restored on the next launch. The preference is stored in `%LOCALAPPDATA%\Simply.ClipboardMonitor\preferences.json`
+The monitoring state is saved automatically when changed and restored on the next launch. The preference is stored in `%LOCALAPPDATA%\Simply.ClipboardMonitor\preferences.json`.
+
+## Clipboard History
+
+Use **Clipboard → Track History** to enable history tracking. A history panel appears below the format list, showing a timestamped record of every clipboard change captured while **Track History** was active.
+
+### History list
+
+Each row in the history list shows:
+- **Date** - timestamp of the clipboard change.
+- **Formats** — colored badges identifying the data categories present in that clipboard snapshot. The tooltip shows a list of every format name and its ID in the snapshot.
+
+  | Pill | Category | Formats matched |
+  |------|----------|-----------------|
+  | **IMG** | Image | `CF_DIB`, `CF_DIBV5`, `CF_BITMAP`, PNG, JPEG, GIF, etc. |
+  | **TXT** | Text | `CF_TEXT`, `CF_UNICODETEXT`, `CF_OEMTEXT`, and text-like format names |
+  | **HTML** | HTML | `HTML Format` and HTML-like format names |
+  | **RTF** | Rich Text | `Rich Text Format` and RTF-like format names |
+  | **FILE** | File drop | `CF_HDROP` |
+  | **OTHER** | Other | Shown only when none of the above apply |
+- **Size** — sum of the original (uncompressed) byte lengths of all formats in the snapshot.
+
+Clicking a row retrieves that session's format snapshots for preview, exactly as they were at the time of capture.
+
+### History database
+
+History is persisted to `%LOCALAPPDATA%\Simply.ClipboardMonitor\history.db` (an SQLite database). Blob data is stored compressed (ZStandard at maximum level) and content-addressed by SHA-256 hash, so identical payloads shared across different formats and different sessions are stored only once.
+
+The database schema has three tables:
+- `clipboard_formats` — the set of all format names and IDs ever seen.
+- `clipboard_contents` — deduplicated compressed blobs, keyed by SHA-256 hash.
+- `sessions` — one row per clipboard change, with timestamp, formats summary text, and total uncompressed size.
+- `session_items` — joins sessions to their per-format blobs.
+
+### History limits
+
+The history database grows over time. Use **File → Settings** to configure:
+- **Max entries** — oldest sessions are deleted when the count exceeds this value.
+- **Max database size (MB)** — oldest sessions are deleted until the total stored blob size falls below this limit. At least one session is always retained.
+
+Limits are enforced automatically each time a new session is written, as well as when the user changes the limits in the Settings dialog.
+
+The Settings dialog also shows the current database file size and provides a **Clear History** button.
+
+When history tracking is active, the status bar shows "Tracking history (X.X MB storage size)...".
 
 ## Preview Behavior
 
@@ -148,23 +197,25 @@ A **Save As** dialog opens with the file name pre-set to `clipboard-{format_name
 - WPF
 - .NET 8 (`net8.0-windows`)
 - Win32 APIs via P/Invoke (`user32.dll`, `kernel32.dll`, `gdi32.dll`)
-- SQLite via `Microsoft.Data.Sqlite` (clipboard database persistence)
+- SQLite via `Microsoft.Data.Sqlite` (clipboard database persistence and history)
+- ZStandard via `ZstdSharp.Port` (history blob compression)
 
 ## Project Structure
 
-- `Simply.ClipboardMonitor.sln` - solution
-- `Simply.ClipboardMonitor/Simply.ClipboardMonitor.csproj` - app project
-- `Simply.ClipboardMonitor/App.xaml` / `App.xaml.cs` - WPF application entry point
-- `Simply.ClipboardMonitor/Views/MainWindow.xaml` - main window UI layout
-- `Simply.ClipboardMonitor/Views/MainWindow.xaml.cs` - main window logic (clipboard listener, parsing, previews, encoding detection, export, zoom, pan, sort, preferences)
-- `Simply.ClipboardMonitor/Views/AboutDialog.xaml` - About dialog UI layout
-- `Simply.ClipboardMonitor/Views/AboutDialog.xaml.cs` - About dialog logic
-- `Simply.ClipboardMonitor/Common/ClipboardFormatItem.cs` - format list row model
-- `Simply.ClipboardMonitor/Common/HexRowCollection.cs` - virtualised hex-dump row collection
-- `Simply.ClipboardMonitor/Common/ClipboardDatabase.cs` - .clipdb save/load logic (SQLite)
-- `Simply.ClipboardMonitor/Common/NativeMethods.cs` - Win32 P/Invoke declarations
-- `Simply.ClipboardMonitor/Common/ShellHelper.cs` - helper for opening URLs in the default browser
-- `Simply.ClipboardMonitor/Models/UserPreferences.cs` - preferences and column preference model
+- `Simply.ClipboardMonitor.sln` — solution
+- `Simply.ClipboardMonitor/Simply.ClipboardMonitor.csproj` — app project
+- `Simply.ClipboardMonitor/App.xaml` / `App.xaml.cs` — WPF application entry point
+- `Simply.ClipboardMonitor/Views/MainWindow.xaml` — main window UI layout
+- `Simply.ClipboardMonitor/Views/MainWindow.xaml.cs` — main window logic (clipboard listener, parsing, previews, encoding detection, export, zoom, pan, sort, history, preferences)
+- `Simply.ClipboardMonitor/Views/AboutDialog.xaml` / `AboutDialog.xaml.cs` — About dialog
+- `Simply.ClipboardMonitor/Views/SettingsDialog.xaml` / `SettingsDialog.xaml.cs` — Settings dialog (history limits, database size display, clear history)
+- `Simply.ClipboardMonitor/Common/ClipboardFormatItem.cs` — format list row model
+- `Simply.ClipboardMonitor/Common/HexRowCollection.cs` — virtualised hex-dump row collection
+- `Simply.ClipboardMonitor/Common/ClipboardDatabase.cs` — `.clipdb` save/load logic (SQLite)
+- `Simply.ClipboardMonitor/Common/ClipboardHistory.cs` — history database logic (SQLite, ZStandard compression, SHA-256 deduplication, session trimming)
+- `Simply.ClipboardMonitor/Common/NativeMethods.cs` — Win32 P/Invoke declarations
+- `Simply.ClipboardMonitor/Common/ShellHelper.cs` — helper for opening URLs in the default browser
+- `Simply.ClipboardMonitor/Models/UserPreferences.cs` — preferences and column preference model
 
 ## Build and Run
 

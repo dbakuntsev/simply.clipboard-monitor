@@ -104,7 +104,7 @@
                                         <GridViewColumnHeader x:Name="IdColumnHeader" Content="ID" Tag="FormatId" />
                                     </GridViewColumn.Header>
                                 </GridViewColumn>
-                                <GridViewColumn Width="140">
+                                <GridViewColumn Width="132">
                                     <GridViewColumn.Header>
                                         <GridViewColumnHeader x:Name="FormatColumnHeader" Content="Format" Tag="Name" />
                                     </GridViewColumn.Header>

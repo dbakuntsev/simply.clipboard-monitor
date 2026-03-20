@@ -9,9 +9,8 @@ It shows:
 - Image preview (for image-like formats).
 - A scrollable history of past clipboard changes, with per-session format previews.
 
-| Screenshot: Basic operation, HEX Preview | Screenshot: History Tracking, Image Preview |
-|:----------------------------------------:|:-------------------------------------------:|
-|![Screenshot of Basic operation, HEX Preview](.github/screenshots/demo1.png)|![Screenshot of History Tracking, Image Preview](.github/screenshots/demo2.png)|
+![Screenshot of Basic operation, HEX Preview](.github/screenshots/demo1.png)
+![Screenshot of History Tracking, Image Preview](.github/screenshots/demo2.png)
 
 ## Download Binaries
 

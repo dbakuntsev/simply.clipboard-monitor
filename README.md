@@ -121,7 +121,7 @@ Clicking a row retrieves that session's format snapshots for preview, exactly as
 
 History is persisted to `%LOCALAPPDATA%\Simply.ClipboardMonitor\history.db` (an SQLite database). Blob data is stored compressed (ZStandard at maximum level) and content-addressed by SHA-256 hash, so identical payloads shared across different formats and different sessions are stored only once.
 
-The database schema has three tables:
+The database schema has four tables:
 - `clipboard_formats` — the set of all format names and IDs ever seen.
 - `clipboard_contents` — deduplicated compressed blobs, keyed by SHA-256 hash.
 - `sessions` — one row per clipboard change, with timestamp, formats summary text, and total uncompressed size.
@@ -198,23 +198,83 @@ A **Save As** dialog opens with the file name pre-set to `clipboard-{format_name
 - Win32 APIs via P/Invoke (`user32.dll`, `kernel32.dll`, `gdi32.dll`)
 - SQLite via `Microsoft.Data.Sqlite` (clipboard database persistence and history)
 - ZStandard via `ZstdSharp.Port` (history blob compression)
+- `Microsoft.Extensions.DependencyInjection` (constructor injection throughout)
 
 ## Project Structure
 
 - `Simply.ClipboardMonitor.sln` — solution
 - `Simply.ClipboardMonitor/Simply.ClipboardMonitor.csproj` — app project
-- `Simply.ClipboardMonitor/App.xaml` / `App.xaml.cs` — WPF application entry point
-- `Simply.ClipboardMonitor/Views/MainWindow.xaml` — main window UI layout
-- `Simply.ClipboardMonitor/Views/MainWindow.xaml.cs` — main window logic (clipboard listener, parsing, previews, encoding detection, export, zoom, pan, sort, history, preferences)
+- `Simply.ClipboardMonitor/App.xaml` / `App.xaml.cs` — WPF application entry point; builds the DI container and registers all services, strategies, and exporters
+- `Simply.ClipboardMonitor/Views/MainWindow.xaml` / `MainWindow.xaml.cs` — main window (clipboard listener, format list, previews, history, export, sort, preferences)
 - `Simply.ClipboardMonitor/Views/AboutDialog.xaml` / `AboutDialog.xaml.cs` — About dialog
 - `Simply.ClipboardMonitor/Views/SettingsDialog.xaml` / `SettingsDialog.xaml.cs` — Settings dialog (history limits, database size display, clear history)
-- `Simply.ClipboardMonitor/Common/ClipboardFormatItem.cs` — format list row model
-- `Simply.ClipboardMonitor/Common/HexRowCollection.cs` — virtualised hex-dump row collection
-- `Simply.ClipboardMonitor/Common/ClipboardDatabase.cs` — `.clipdb` save/load logic (SQLite)
-- `Simply.ClipboardMonitor/Common/ClipboardHistory.cs` — history database logic (SQLite, ZStandard compression, SHA-256 deduplication, session trimming)
-- `Simply.ClipboardMonitor/Common/NativeMethods.cs` — Win32 P/Invoke declarations
-- `Simply.ClipboardMonitor/Common/ShellHelper.cs` — helper for opening URLs in the default browser
-- `Simply.ClipboardMonitor/Models/UserPreferences.cs` — preferences and column preference model
+
+### Models
+Data-transfer records and plain model classes with no service dependencies.
+
+- `Models/ClipboardFormatItem.cs` — format list row model (ordinal, ID, name, content size)
+- `Models/EncodingItem.cs` — encoding display name + `Encoding` pair for the encoding combo box
+- `Models/FormatColumnPreference.cs` — saved column width preference
+- `Models/FormatExportContext.cs` — context record passed to `IFormatExporter` implementations
+- `Models/FormatPill.cs` — colored badge record (label + brush) for the history Formats column
+- `Models/FormatSnapshot.cs` — point-in-time capture of one clipboard format (handle type, raw bytes, original size)
+- `Models/SavedClipboardFormat.cs` — format row stored in / loaded from a `.clipdb` file
+- `Models/SessionEntry.cs` — one row from the history sessions table
+- `Models/TextDecodeResult.cs` — result of a single text-decode attempt (text, encoding, success/failure)
+- `Models/UserPreferences.cs` — top-level user preferences (sort property/direction, monitor/history settings, limits)
+
+### Services
+Public domain service interfaces consumed by the main window and DI wiring.
+
+- `Services/IClipboardFileRepository.cs` — save/load clipboard snapshots to `.clipdb` files
+- `Services/IClipboardReader.cs` — enumerate and read current clipboard formats; capture full snapshots
+- `Services/IClipboardWriter.cs` — restore saved formats back onto the clipboard
+- `Services/IFormatClassifier.cs` — classify formats into colored pills and tooltip text for the history list
+- `Services/IFormatExporter.cs` — export a clipboard format to a file (one implementation per output type)
+- `Services/IHistoryMaintenance.cs` — database maintenance operations (enforce size limits, clear history)
+- `Services/IHistoryRepository.cs` — clipboard history persistence (add session, load sessions and formats)
+- `Services/IImagePreviewService.cs` — create WPF `BitmapSource` previews from raw clipboard bytes
+- `Services/IPreferencesService.cs` — load and save user preferences
+- `Services/ITextDecodingService.cs` — decode raw bytes as text with auto-detection or manual encoding override
+
+### Services/Impl
+Concrete service implementations. All classes are `internal sealed`.
+
+- `Services/Impl/IHandleReadStrategy.cs` — internal strategy interface for reading a specific clipboard handle type
+- `Services/Impl/IHandleWriteStrategy.cs` — internal strategy interface for restoring a specific clipboard handle type
+- `Services/Impl/ClipboardFileRepository.cs` — `.clipdb` save/load (SQLite, SHA-256 content deduplication)
+- `Services/Impl/ClipboardReaderService.cs` — Win32 clipboard reading; dispatches per-handle-type work to injected `IHandleReadStrategy` implementations
+- `Services/Impl/ClipboardWriterService.cs` — Win32 clipboard writing; dispatches per-handle-type work to injected `IHandleWriteStrategy` implementations
+- `Services/Impl/FormatClassifierService.cs` — produces colored pills and tooltip text for the history list
+- `Services/Impl/HistoryRepository.cs` — history database (SQLite, ZStandard compression, SHA-256 deduplication, session trimming); implements both `IHistoryRepository` and `IHistoryMaintenance`
+- `Services/Impl/ImagePreviewService.cs` — decodes DIB, HBITMAP-derived, and encoded image formats into WPF `BitmapSource` objects
+- `Services/Impl/PreferencesService.cs` — JSON preferences persisted to `%LOCALAPPDATA%\Simply.ClipboardMonitor\preferences.json`
+- `Services/Impl/TextDecodingService.cs` — text decoding with format-aware priority chain and UTF-16 heuristics
+
+### Services/Impl/Strategies
+One class per clipboard handle type or export file format. All classes are `internal sealed`.
+
+- `Strategies/NoneHandleReadStrategy.cs` — "none" handle type (e.g. `CF_PALETTE`): returns a failure message; no data read
+- `Strategies/HGlobalHandleReadStrategy.cs` — HGLOBAL: `GlobalLock` / `GlobalUnlock` byte copy
+- `Strategies/HBitmapHandleReadStrategy.cs` — HBITMAP: converts to 32 bpp DIB via `GetDIBits`
+- `Strategies/HEnhMetaFileHandleReadStrategy.cs` — HENHMETAFILE: raw EMF bytes via `GetEnhMetaFileBits`
+- `Strategies/HGlobalHandleWriteStrategy.cs` — HGLOBAL restore: `GlobalAlloc` + `SetClipboardData`
+- `Strategies/HBitmapHandleWriteStrategy.cs` — HBITMAP restore: `CreateDIBitmap` + `SetClipboardData`
+- `Strategies/HEnhMetaFileHandleWriteStrategy.cs` — HENHMETAFILE restore: `SetEnhMetaFileBits` + `SetClipboardData`
+- `Strategies/TextFormatExporter.cs` — exports as `.txt` using the auto-detected or manually selected encoding
+- `Strategies/PngFormatExporter.cs` — exports image preview as `.png`
+- `Strategies/JpegFormatExporter.cs` — exports as `.jpg` (raw bytes for native JPEG formats; re-encoded at quality 80 otherwise)
+- `Strategies/BinaryFormatExporter.cs` — exports raw bytes as `.bin` (always-available fallback)
+
+### Common
+Internal utility types with no domain logic.
+
+- `Common/ClipboardFormatConstants.cs` — Windows clipboard format ID constants (`CF_TEXT`, `CF_BITMAP`, etc.) and handle-type classification sets
+- `Common/HexRow.cs` — single hex-dump display row (offset, hex bytes, ASCII)
+- `Common/HexRowCollection.cs` — lazy-loaded, cached `IReadOnlyList<HexRow>` over a raw byte array
+- `Common/NativeMethods.cs` — Win32 P/Invoke declarations (`user32.dll`, `kernel32.dll`, `gdi32.dll`)
+- `Common/ShellHelper.cs` — opens a URL in the default browser via `ShellExecute`
+- `Common/Win32Structs.cs` — Win32 GDI structs used by clipboard read/write (`BITMAP`, `BITMAPINFOHEADER`)
 
 ## Build and Run
 

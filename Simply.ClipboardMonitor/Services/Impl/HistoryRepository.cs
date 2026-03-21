@@ -1,31 +1,11 @@
 using Microsoft.Data.Sqlite;
+using Simply.ClipboardMonitor.Models;
+using Simply.ClipboardMonitor.Services;
 using System.IO;
 using System.Security.Cryptography;
 using ZstdSharp;
 
-namespace Simply.ClipboardMonitor.Common;
-
-/// <summary>
-/// One clipboard format entry captured at a point in time, with its raw bytes.
-/// </summary>
-internal sealed record FormatSnapshot(
-    int     Ordinal,
-    uint    FormatId,
-    string  FormatName,
-    string  HandleType,
-    /// <summary>Raw (uncompressed) bytes; null for handle types with no readable data.</summary>
-    byte[]? Data,
-    long    OriginalSize);
-
-/// <summary>
-/// A single row from the sessions table, used to populate the history list.
-/// </summary>
-internal sealed record SessionEntry(
-    long     SessionId,
-    DateTime Timestamp,
-    string   FormatsText,
-    long     TotalSize,
-    IReadOnlyList<(uint FormatId, string FormatName)> Formats);
+namespace Simply.ClipboardMonitor.Services.Impl;
 
 /// <summary>
 /// Persists clipboard change history to a local SQLite database (history.db).
@@ -33,11 +13,11 @@ internal sealed record SessionEntry(
 /// Blob data is stored compressed (ZStandard, max level) and deduplicated by SHA-256
 /// hash so that identical payloads across different sessions are stored only once.
 /// </summary>
-internal static class ClipboardHistory
+internal sealed class HistoryRepository : IHistoryRepository, IHistoryMaintenance
 {
     private const int ZstdMaxLevel = 22;
 
-    private static string DbPath =>
+    private string DbPath =>
         Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "Simply.ClipboardMonitor",
@@ -55,7 +35,7 @@ internal static class ClipboardHistory
     /// The new session's row ID and a flag indicating whether any older sessions
     /// were deleted by <see cref="TrimToLimits"/> (i.e. the history list needs refresh).
     /// </returns>
-    public static (long SessionId, bool Trimmed) AddSession(
+    public (long SessionId, bool Trimmed) AddSession(
         IReadOnlyList<FormatSnapshot> snapshots,
         DateTime timestamp,
         int  maxEntries,
@@ -116,7 +96,7 @@ internal static class ClipboardHistory
     }
 
     /// <summary>Returns the history database file size in bytes, or 0 if it does not exist.</summary>
-    public static long GetDatabaseFileSize()
+    public long GetDatabaseFileSize()
     {
         var path = DbPath;
         return File.Exists(path) ? new FileInfo(path).Length : 0L;
@@ -129,7 +109,7 @@ internal static class ClipboardHistory
     /// No-op (returns <see langword="false"/>) when the database does not exist.
     /// Intended to be called from a background thread.
     /// </summary>
-    public static bool EnforceLimits(int maxEntries, long maxDatabaseBytes)
+    public bool EnforceLimits(int maxEntries, long maxDatabaseBytes)
     {
         if (!File.Exists(DbPath))
             return false;
@@ -156,7 +136,7 @@ internal static class ClipboardHistory
     /// Deletes all sessions, items, and content blobs, then compacts the file with VACUUM.
     /// Safe to call when the database does not yet exist.
     /// </summary>
-    public static void ClearHistory()
+    public void ClearHistory()
     {
         if (!File.Exists(DbPath))
             return;
@@ -191,7 +171,7 @@ internal static class ClipboardHistory
     /// Returns all sessions ordered newest-first (up to <paramref name="maxCount"/>).
     /// Returns an empty list if the database does not exist yet.
     /// </summary>
-    public static List<SessionEntry> LoadSessions(int maxCount = 2000)
+    public List<SessionEntry> LoadSessions(int maxCount = 2000)
     {
         if (!File.Exists(DbPath))
             return [];
@@ -250,7 +230,7 @@ internal static class ClipboardHistory
     /// Returns all format snapshots for a given session, with blobs decompressed.
     /// Returns an empty list if the database does not exist.
     /// </summary>
-    public static List<FormatSnapshot> LoadSessionFormats(long sessionId)
+    public List<FormatSnapshot> LoadSessionFormats(long sessionId)
     {
         if (!File.Exists(DbPath))
             return [];
@@ -304,7 +284,7 @@ internal static class ClipboardHistory
 
     // ── Schema ──────────────────────────────────────────────────────────────
 
-    private static void CreateSchema(SqliteConnection conn)
+    private void CreateSchema(SqliteConnection conn)
     {
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
@@ -345,7 +325,7 @@ internal static class ClipboardHistory
 
     // ── Write helpers ────────────────────────────────────────────────────────
 
-    private static long InsertSession(SqliteConnection conn, DateTime timestamp, string formatsText, long totalSize)
+    private long InsertSession(SqliteConnection conn, DateTime timestamp, string formatsText, long totalSize)
     {
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
@@ -359,7 +339,7 @@ internal static class ClipboardHistory
         return (long)cmd.ExecuteScalar()!;
     }
 
-    private static long EnsureClipboardFormat(SqliteConnection conn, uint formatId, string formatName)
+    private long EnsureClipboardFormat(SqliteConnection conn, uint formatId, string formatName)
     {
         using var check = conn.CreateCommand();
         check.CommandText = "SELECT id FROM clipboard_formats WHERE format_name = @name";
@@ -378,7 +358,7 @@ internal static class ClipboardHistory
         return (long)insert.ExecuteScalar()!;
     }
 
-    private static long EnsureContent(SqliteConnection conn, string hash, byte[] data, long originalSize)
+    private long EnsureContent(SqliteConnection conn, string hash, byte[] data, long originalSize)
     {
         using var check = conn.CreateCommand();
         check.CommandText = "SELECT id FROM clipboard_contents WHERE content_hash = @hash";
@@ -402,7 +382,7 @@ internal static class ClipboardHistory
         return (long)insert.ExecuteScalar()!;
     }
 
-    private static void InsertSessionItem(SqliteConnection conn, long sessionId, int ordinal,
+    private void InsertSessionItem(SqliteConnection conn, long sessionId, int ordinal,
         long formatDbId, long? contentId, string handleType)
     {
         using var cmd = conn.CreateCommand();
@@ -421,14 +401,14 @@ internal static class ClipboardHistory
 
     // ── Utilities ────────────────────────────────────────────────────────────
 
-    private static string ComputeHash(byte[] data)
+    private string ComputeHash(byte[] data)
     {
         Span<byte> hash = stackalloc byte[32];
         SHA256.HashData(data, hash);
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
 
-    internal static string BuildFormatsText(IReadOnlyList<FormatSnapshot> snapshots)
+    public string BuildFormatsText(IReadOnlyList<FormatSnapshot> snapshots)
     {
         var joined = string.Join(", ", snapshots.Select(s => s.FormatName));
         return joined.Length > 80 ? joined[..77] + "..." : joined;
@@ -441,7 +421,7 @@ internal static class ClipboardHistory
     /// session count and the approximate database size are within limits.
     /// Returns true if anything was deleted (caller should VACUUM afterwards).
     /// </summary>
-    private static bool TrimToLimits(SqliteConnection conn, int maxEntries, long maxDatabaseBytes)
+    private bool TrimToLimits(SqliteConnection conn, int maxEntries, long maxDatabaseBytes)
     {
         var deleted = false;
 
@@ -477,7 +457,7 @@ internal static class ClipboardHistory
         return deleted;
     }
 
-    private static long GetSessionCount(SqliteConnection conn)
+    private long GetSessionCount(SqliteConnection conn)
     {
         using var cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT COUNT(*) FROM sessions";
@@ -489,14 +469,14 @@ internal static class ClipboardHistory
     /// Decreases immediately after a DELETE + COMMIT, making it reliable for size-limit
     /// enforcement without needing a VACUUM first.
     /// </summary>
-    private static long GetStoredBlobBytes(SqliteConnection conn)
+    private long GetStoredBlobBytes(SqliteConnection conn)
     {
         using var cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT COALESCE(SUM(LENGTH(data)), 0) FROM clipboard_contents";
         return (long)cmd.ExecuteScalar()!;
     }
 
-    private static void DeleteOldestSessions(SqliteConnection conn, int count)
+    private void DeleteOldestSessions(SqliteConnection conn, int count)
     {
         using var delItems = conn.CreateCommand();
         delItems.CommandText = """
@@ -515,7 +495,7 @@ internal static class ClipboardHistory
         delSessions.ExecuteNonQuery();
     }
 
-    private static void DeleteOrphanedContent(SqliteConnection conn)
+    private void DeleteOrphanedContent(SqliteConnection conn)
     {
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
@@ -529,7 +509,7 @@ internal static class ClipboardHistory
         cmd.ExecuteNonQuery();
     }
 
-    private static SqliteConnection OpenConnection(bool readOnly)
+    private SqliteConnection OpenConnection(bool readOnly)
     {
         var path = DbPath;
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);

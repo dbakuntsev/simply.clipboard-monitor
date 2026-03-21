@@ -1,6 +1,6 @@
 namespace Simply.ClipboardMonitor.Models;
 
-internal sealed class UserPreferences
+public sealed class UserPreferences
 {
     public string? SortProperty { get; set; }
     public string? SortDirection { get; set; }
@@ -11,8 +11,3 @@ internal sealed class UserPreferences
     public int HistoryMaxSizeMb  { get; set; } = 100;
 }
 
-internal sealed class FormatColumnPreference
-{
-    public string Key { get; set; } = string.Empty;
-    public double? Width { get; set; }
-}

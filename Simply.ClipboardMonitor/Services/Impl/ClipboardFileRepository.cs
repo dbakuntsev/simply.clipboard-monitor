@@ -1,24 +1,11 @@
 using Microsoft.Data.Sqlite;
+using Simply.ClipboardMonitor.Models;
+using Simply.ClipboardMonitor.Services;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 
-namespace Simply.ClipboardMonitor.Common;
-
-/// <summary>
-/// Represents one clipboard format entry as stored in / loaded from a .clipdb file.
-/// </summary>
-internal sealed record SavedClipboardFormat(
-    int    Ordinal,
-    uint   FormatId,
-    string FormatName,
-    /// <summary>
-    /// How the Windows clipboard handle was originally obtained.
-    /// One of: "hglobal" | "hbitmap" | "henhmetafile" | "none"
-    /// </summary>
-    string HandleType,
-    /// <summary>Raw bytes; null for formats with no readable data (e.g. CF_PALETTE).</summary>
-    byte[]? Data);
+namespace Simply.ClipboardMonitor.Services.Impl;
 
 /// <summary>
 /// Saves and loads clipboard snapshots to/from a passwordless SQLite database (.clipdb).
@@ -26,7 +13,7 @@ internal sealed record SavedClipboardFormat(
 /// Identical data blocks are stored only once (content-addressed by SHA-256 hash),
 /// so copying one large format many times does not inflate the file.
 /// </summary>
-internal static class ClipboardDatabase
+internal sealed class ClipboardFileRepository : IClipboardFileRepository
 {
     // ── Public API ──────────────────────────────────────────────────────────
 
@@ -34,7 +21,7 @@ internal static class ClipboardDatabase
     /// Creates (or overwrites) the file at <paramref name="path"/> and writes
     /// every format in <paramref name="formats"/> into it.
     /// </summary>
-    public static void Save(string path, IReadOnlyList<SavedClipboardFormat> formats)
+    public void Save(string path, IReadOnlyList<SavedClipboardFormat> formats)
     {
         if (File.Exists(path))
             File.Delete(path);
@@ -86,7 +73,7 @@ internal static class ClipboardDatabase
     /// <summary>
     /// Opens the file at <paramref name="path"/> and returns all stored clipboard formats.
     /// </summary>
-    public static List<SavedClipboardFormat> Load(string path)
+    public List<SavedClipboardFormat> Load(string path)
     {
         try
         {
@@ -127,7 +114,7 @@ internal static class ClipboardDatabase
 
     // ── Schema ──────────────────────────────────────────────────────────────
 
-    private static void CreateSchema(SqliteConnection conn)
+    private void CreateSchema(SqliteConnection conn)
     {
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
@@ -153,7 +140,7 @@ internal static class ClipboardDatabase
 
     // ── Helpers ─────────────────────────────────────────────────────────────
 
-    private static void EnsureBlob(SqliteConnection conn, string hash, byte[] data)
+    private void EnsureBlob(SqliteConnection conn, string hash, byte[] data)
     {
         using var check = conn.CreateCommand();
         check.CommandText = "SELECT COUNT(1) FROM data_blobs WHERE hash = @hash";
@@ -168,14 +155,14 @@ internal static class ClipboardDatabase
         insert.ExecuteNonQuery();
     }
 
-    private static string ComputeHash(byte[] data)
+    private string ComputeHash(byte[] data)
     {
         Span<byte> hash = stackalloc byte[32];
         SHA256.HashData(data, hash);
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
 
-    private static SqliteConnection OpenConnection(string path, bool readOnly)
+    private SqliteConnection OpenConnection(string path, bool readOnly)
     {
         var csb = new SqliteConnectionStringBuilder
         {

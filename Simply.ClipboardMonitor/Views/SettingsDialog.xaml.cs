@@ -1,10 +1,12 @@
-using Simply.ClipboardMonitor.Common;
+using Simply.ClipboardMonitor.Services;
 using System.Windows;
 
 namespace Simply.ClipboardMonitor;
 
 public partial class SettingsDialog : Window
 {
+    private readonly IHistoryRepository _history;
+
     /// <summary>Validated maximum entry count; meaningful only when DialogResult is true.</summary>
     public int MaxEntries { get; private set; }
 
@@ -14,8 +16,9 @@ public partial class SettingsDialog : Window
     /// <summary>True if the user pressed "Clear History" at any point during this dialog session.</summary>
     public bool HistoryWasCleared { get; private set; }
 
-    public SettingsDialog(int maxEntries, int maxSizeMb)
+    internal SettingsDialog(int maxEntries, int maxSizeMb, IHistoryRepository history)
     {
+        _history = history;
         InitializeComponent();
         MaxEntriesBox.Text = maxEntries.ToString();
         MaxSizeMbBox.Text  = maxSizeMb.ToString();
@@ -24,12 +27,12 @@ public partial class SettingsDialog : Window
 
     private void RefreshDbSizeDisplay()
     {
-        DbSizeTextBlock.Text = FormatFileSize(ClipboardHistory.GetDatabaseFileSize());
+        DbSizeTextBlock.Text = FormatFileSize(_history.GetDatabaseFileSize());
     }
 
     private void ClearHistoryButton_Click(object sender, RoutedEventArgs e)
     {
-        ClipboardHistory.ClearHistory();
+        _history.ClearHistory();
         HistoryWasCleared = true;
         RefreshDbSizeDisplay();
     }

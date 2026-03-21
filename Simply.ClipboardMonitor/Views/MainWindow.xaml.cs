@@ -1,16 +1,14 @@
-﻿using Microsoft.Data.Sqlite;
+using Microsoft.Data.Sqlite;
 using Microsoft.Win32;
 using System.Threading.Channels;
 using Simply.ClipboardMonitor.Common;
 using Simply.ClipboardMonitor.Models;
-using System.Buffers.Binary;
+using Simply.ClipboardMonitor.Services;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Globalization;
 using System.IO;
-using System.Runtime.InteropServices;
 using System.Text;
-using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -26,8 +24,6 @@ namespace Simply.ClipboardMonitor;
 public partial class MainWindow : Window
 {
     private const int WM_CLIPBOARDUPDATE = 0x031D;
-    private const int ERROR_NOT_LOCKED = 158;
-    private const string PreferencesFileName = "preferences.json";
     private const string DefaultSortProperty = nameof(ClipboardFormatItem.Ordinal);
 
     public static readonly RoutedUICommand RefreshClipboardCommand = new(
@@ -46,40 +42,15 @@ public partial class MainWindow : Window
         "Export Selected Format", "ExportSelectedFormat", typeof(MainWindow),
         new InputGestureCollection { new KeyGesture(Key.E, ModifierKeys.Control) });
 
-    private static readonly Dictionary<uint, string> WellKnownFormats = new()
-    {
-        [1] = "CF_TEXT",
-        [2] = "CF_BITMAP",
-        [3] = "CF_METAFILEPICT",
-        [4] = "CF_SYLK",
-        [5] = "CF_DIF",
-        [6] = "CF_TIFF",
-        [7] = "CF_OEMTEXT",
-        [8] = "CF_DIB",
-        [9] = "CF_PALETTE",
-        [10] = "CF_PENDATA",
-        [11] = "CF_RIFF",
-        [12] = "CF_WAVE",
-        [13] = "CF_UNICODETEXT",
-        [14] = "CF_ENHMETAFILE",
-        [15] = "CF_HDROP",
-        [16] = "CF_LOCALE",
-        [17] = "CF_DIBV5",
-        [0x0080] = "CF_OWNERDISPLAY",
-        [0x0081] = "CF_DSPTEXT",
-        [0x0082] = "CF_DSPBITMAP",
-        [0x0083] = "CF_DSPMETAFILEPICT",
-        [0x008E] = "CF_DSPENHMETAFILE"
-    };
-
-    // CF_BITMAP / CF_DSPBITMAP: HBITMAP — converted to DIB bytes via GetDIBits.
-    private static readonly HashSet<uint> HBitmapFormats = [2, 0x0082];
-
-    // CF_ENHMETAFILE / CF_DSPENHMETAFILE: HENHMETAFILE — raw bytes via GetEnhMetaFileBits.
-    private static readonly HashSet<uint> HEnhMetaFileFormats = [14, 0x008E];
-
-    // Formats whose handles cannot be usefully read as raw bytes (HPALETTE, etc.).
-    private static readonly HashSet<uint> NonGlobalMemoryFormats = [9]; // CF_PALETTE
+    // ── Injected services ──────────────────────────────────────────────────
+    private readonly IClipboardReader         _clipboardReader;
+    private readonly IClipboardWriter         _clipboardWriter;
+    private readonly ITextDecodingService     _textDecoding;
+    private readonly IImagePreviewService     _imagePreviews;
+    private readonly IFormatClassifier        _formatClassifier;
+    private readonly IPreferencesService      _preferences;
+    private readonly IHistoryRepository       _history;
+    private readonly IClipboardFileRepository _clipboardFiles;
 
     private readonly ObservableCollection<ClipboardFormatItem> _formats = [];
     private HwndSource? _hwndSource;
@@ -128,32 +99,8 @@ public partial class MainWindow : Window
     private Dictionary<string, FormatSnapshot>? _staticSnapshot;
     // Channel that serialises all DB operations through one background consumer.
     // Each item is an Action so both session writes and limit-enforcement can share the queue.
-    // Note: SingleReader is intentionally omitted — SingleConsumerUnboundedChannel does not
-    // implement ChannelReader.Count, which is needed to detect whether the queue is empty.
     private readonly Channel<Action> _historyChannel =
         Channel.CreateUnbounded<Action>();
-
-    // ── History list pill colours ─────────────────────────────────────────────
-    private static readonly Brush PillBrushImage = MakeBrush(0x5B, 0x9B, 0xD5); // blue  — images
-    private static readonly Brush PillBrushText  = MakeBrush(0x70, 0xAD, 0x47); // green — text
-    private static readonly Brush PillBrushHtml  = MakeBrush(0xED, 0x7D, 0x31); // orange — HTML
-    private static readonly Brush PillBrushRtf   = MakeBrush(0x9E, 0x52, 0x9F); // purple — RTF
-    private static readonly Brush PillBrushFile  = MakeBrush(0x8B, 0x65, 0x33); // brown — files
-    private static readonly Brush PillBrushOther = MakeBrush(0x80, 0x80, 0x80); // gray — other
-
-    private static Brush MakeBrush(byte r, byte g, byte b)
-    {
-        var brush = new SolidColorBrush(Color.FromRgb(r, g, b));
-        brush.Freeze();
-        return brush;
-    }
-
-    /// <summary>A single labelled pill displayed in the Formats column of the history list.</summary>
-    private sealed class FormatPill
-    {
-        public required string Label      { get; init; }
-        public required Brush  Background { get; init; }
-    }
 
     private sealed class HistoryItem
     {
@@ -163,6 +110,9 @@ public partial class MainWindow : Window
         public required long     TotalSize   { get; init; }
         public required IReadOnlyList<(uint FormatId, string FormatName)> Formats { get; init; }
 
+        public IReadOnlyList<FormatPill> Pills         { get; init; } = [];
+        public string                    FormatsTooltip { get; init; } = string.Empty;
+
         public string DateText => Timestamp.ToString("yyyy-MM-dd HH:mm:ss");
         public string SizeText => TotalSize switch
         {
@@ -170,19 +120,31 @@ public partial class MainWindow : Window
             >= 1024         => $"{TotalSize / 1024.0:F1} KB",
             _               => $"{TotalSize} B",
         };
-
-        /// <summary>Pills shown in the Formats column, one per recognised format category.</summary>
-        public IReadOnlyList<FormatPill> Pills => ComputePills(Formats);
-
-        /// <summary>Tooltip text: total count on the first line, then one "Name (ID)" per line.</summary>
-        public string FormatsTooltip => ComputeFormatsTooltip(Formats);
     }
 
-    public MainWindow()
+    public MainWindow(
+        IClipboardReader         clipboardReader,
+        IClipboardWriter         clipboardWriter,
+        ITextDecodingService     textDecoding,
+        IImagePreviewService     imagePreviews,
+        IFormatClassifier        formatClassifier,
+        IPreferencesService      preferences,
+        IHistoryRepository       history,
+        IClipboardFileRepository clipboardFiles)
     {
+        _clipboardReader  = clipboardReader;
+        _clipboardWriter  = clipboardWriter;
+        _textDecoding     = textDecoding;
+        _imagePreviews    = imagePreviews;
+        _formatClassifier = formatClassifier;
+        _preferences      = preferences;
+        _history          = history;
+        _clipboardFiles   = clipboardFiles;
+
         // Required for legacy OEM/ANSI code pages (e.g. CP437 used by CF_OEMTEXT) which
         // are not included in the default .NET encoding set.
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+
         InitializeComponent();
         CommandBindings.Add(new CommandBinding(RefreshClipboardCommand, RefreshClipboardCommand_Executed, RefreshClipboardCommand_CanExecute));
         CommandBindings.Add(new CommandBinding(LoadCommand, LoadCommand_Executed));
@@ -190,7 +152,7 @@ public partial class MainWindow : Window
         CommandBindings.Add(new CommandBinding(ExportCommand, ExportCommand_Executed, ExportCommand_CanExecute));
         _ = Task.Run(ProcessHistoryChannelAsync);
         _isUiReady = true;
-        FormatListBox.ItemsSource  = _formats;
+        FormatListBox.ItemsSource   = _formats;
         HistoryListView.ItemsSource = _historyItems;
         LoadPreferences();
         MenuItemMonitorChanges.IsChecked = _isMonitoring;
@@ -249,7 +211,7 @@ public partial class MainWindow : Window
                 // Read the sequence number before RefreshFormats() so that any
                 // GetClipboardData call (including delayed-rendering triggers) that
                 // increments it during the refresh is detectable afterwards.
-                var seqAtArrival = NativeMethods.GetClipboardSequenceNumber();
+                var seqAtArrival = _clipboardReader.GetSequenceNumber();
                 RefreshFormats();
                 if (_isTrackingHistory)
                     CaptureHistorySession(seqAtArrival);
@@ -268,7 +230,7 @@ public partial class MainWindow : Window
         var selectedId = (FormatListBox.SelectedItem as ClipboardFormatItem)?.FormatId;
         _formats.Clear();
 
-        foreach (var item in EnumerateClipboardFormats())
+        foreach (var item in _clipboardReader.EnumerateFormats())
         {
             _formats.Add(item);
         }
@@ -296,8 +258,8 @@ public partial class MainWindow : Window
 
         ContentTabControl.Visibility = Visibility.Visible;
         NoSelectionPanel.Visibility = Visibility.Collapsed;
-        TextTabItem.IsEnabled = IsTextCompatible(item.FormatId, item.Name);
-        ImageTabItem.IsEnabled = IsImageCompatible(item.FormatId, item.Name);
+        TextTabItem.IsEnabled  = _textDecoding.IsTextCompatible(item.FormatId, item.Name);
+        ImageTabItem.IsEnabled = _imagePreviews.IsImageCompatible(item.FormatId, item.Name);
 
         if (!TextTabItem.IsEnabled && ContentTabControl.SelectedItem == TextTabItem)
             ContentTabControl.SelectedItem = HexTabItem;
@@ -342,7 +304,7 @@ public partial class MainWindow : Window
         else
         {
             // Live mode — read from the clipboard.
-            if (!TryOpenClipboard(IntPtr.Zero))
+            if (!_clipboardReader.TryOpenClipboard(IntPtr.Zero))
             {
                 SetHexPreviewUnavailable("Unable to open clipboard.");
                 return;
@@ -350,11 +312,13 @@ public partial class MainWindow : Window
 
             try
             {
-                TryReadClipboardDataBytes(item.FormatId, out bytes, out hexFailureMessage);
+                var handleType = _clipboardReader.GetHandleType(item.FormatId);
+                _clipboardReader.TryReadFormatBytes(item.FormatId, handleType,
+                    out bytes, out hexFailureMessage);
             }
             finally
             {
-                NativeMethods.CloseClipboard();
+                _clipboardReader.CloseClipboard();
             }
         }
 
@@ -365,8 +329,8 @@ public partial class MainWindow : Window
             SetHexPreview(bytes);
             UpdateTextPreview(item.FormatId, item.Name, bytes);
 
-            if (TryCreateImagePreview(item.FormatId, item.Name, bytes, out imagePreview, out imageFailureMessage) &&
-                imagePreview != null)
+            if (_imagePreviews.TryCreatePreview(item.FormatId, item.Name, bytes,
+                    out imagePreview, out imageFailureMessage) && imagePreview != null)
             {
                 SetImagePreview(imagePreview);
             }
@@ -381,44 +345,6 @@ public partial class MainWindow : Window
             SetTextPreviewUnavailable("Text preview requires byte-addressable clipboard data.");
             SetImagePreviewUnavailable("Image preview requires byte-addressable clipboard data.");
         }
-    }
-
-    private IEnumerable<ClipboardFormatItem> EnumerateClipboardFormats()
-    {
-        var results = new List<ClipboardFormatItem>();
-
-        if (!TryOpenClipboard(IntPtr.Zero))
-        {
-            return results;
-        }
-
-        try
-        {
-            uint format = 0;
-            var ordinal = 1;
-            while (true)
-            {
-                format = NativeMethods.EnumClipboardFormats(format);
-                if (format == 0)
-                {
-                    break;
-                }
-
-                var name = GetFormatDisplayName(format);
-                var hasSize = TryGetClipboardDataSize(format, out var sizeBytes);
-                var contentSizeValue = hasSize ? (long)sizeBytes : -1L;
-                var contentSize = hasSize ? sizeBytes.ToString("N0") : "n/a";
-
-                results.Add(new ClipboardFormatItem(ordinal, format, name, contentSize, contentSizeValue));
-                ordinal++;
-            }
-        }
-        finally
-        {
-            NativeMethods.CloseClipboard();
-        }
-
-        return results;
     }
 
     private void SetHexPreview(byte[] data)
@@ -439,40 +365,31 @@ public partial class MainWindow : Window
         _currentAutoDetectedEncoding = null;
         _textEncodingManuallyChanged = false;
 
-        if (!TryDecodeTextContent(formatId, formatName, bytes, out var text, out var message, out var detectedEncoding))
+        var result = _textDecoding.Decode(formatId, formatName, bytes);
+
+        if (!result.Success)
         {
-            SetTextPreviewUnavailable(message);
+            SetTextPreviewUnavailable(result.FailureMessage ?? "Text preview unavailable for this format.");
             return;
         }
 
-        _currentAutoDetectedEncoding    = detectedEncoding;
+        _currentAutoDetectedEncoding    = result.DetectedEncoding;
         TextContentTextBox.Foreground   = SystemColors.WindowTextBrush;
-        TextContentTextBox.Text         = text;
-        TextStatusTextBlock.Text        = DecodedTextStatusText(text);
-        PopulateEncodingComboBox(detectedEncoding);
+        TextContentTextBox.Text         = result.Text ?? string.Empty;
+        TextStatusTextBlock.Text        = _textDecoding.GetDecodedTextStats(result.Text ?? string.Empty);
+        PopulateEncodingComboBox(result.DetectedEncoding);
     }
 
     private void PopulateEncodingComboBox(Encoding? preselect)
     {
-        _encodingItems ??= Encoding.GetEncodings()
-            .Select(info =>
-            {
-                try   { return new EncodingItem(info.GetEncoding(), $"{info.DisplayName} ({info.Name})"); }
-                catch { return null; }
-            })
-            .OfType<EncodingItem>()
-            .Append(new EncodingItem(
-                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true),
-                "Unicode (UTF-8, strict) (utf-8-strict)"))
-            .OrderBy(e => e.DisplayText)
-            .ToList();
+        _encodingItems ??= _textDecoding.GetAvailableEncodings();
 
         if (TextEncodingComboBox.ItemsSource == null)
             TextEncodingComboBox.ItemsSource = _encodingItems;
 
         TextEncodingComboBox.IsEnabled = true;
 
-        _suppressEncodingChange         = true;
+        _suppressEncodingChange = true;
         TextEncodingComboBox.SelectedItem = preselect != null
             ? _encodingItems.FirstOrDefault(e => e.Encoding.CodePage == preselect.CodePage)
             : null;
@@ -488,337 +405,20 @@ public partial class MainWindow : Window
 
         _textEncodingManuallyChanged = true;
 
-        try
+        var result = _textDecoding.DecodeWith(_currentTextBytes, item.Encoding);
+
+        if (result.Success)
         {
-            var decoded                   = item.Encoding.GetString(_currentTextBytes).TrimEnd('\0');
-            TextContentTextBox.Text       = decoded;
+            TextContentTextBox.Text       = result.Text ?? string.Empty;
             TextContentTextBox.Foreground = SystemColors.WindowTextBrush;
-            TextStatusTextBlock.Text      = DecodedTextStatusText(decoded);
+            TextStatusTextBlock.Text      = _textDecoding.GetDecodedTextStats(result.Text ?? string.Empty);
         }
-        catch (Exception ex)
+        else
         {
-            TextContentTextBox.Text       = $"Cannot decode as {item.DisplayText}:\n{ex.Message}";
+            TextContentTextBox.Text       = $"Cannot decode as {item.DisplayName}:\n{result.FailureMessage}";
             TextContentTextBox.Foreground = Brushes.Crimson;
             TextStatusTextBlock.Text      = "Decoding failed.";
         }
-    }
-
-    private static string DecodedTextStatusText(string text)
-    {
-        int chars  = text.Length;
-        int nonWs  = text.Count(c => !char.IsWhiteSpace(c));
-        int newlines = 0;
-        for (int i = 0; i < text.Length; i++)
-        {
-            // Approximate the number of lines by counting standalone \n and \r as well as sequences \r\n as a single newline.
-            if (text[i] == '\r') 
-            { 
-                newlines++; 
-                if (i + 1 < text.Length && text[i + 1] == '\n') 
-                    i++; 
-            }
-            else if (text[i] == '\n') 
-                newlines++;
-        }
-        int lines  = chars == 0 ? 0 : newlines + 1;
-        return $"{chars:N0} character{(chars == 1 ? "" : "s")} ({nonWs:N0} non-whitespace) · {lines:N0} line{(lines == 1 ? "" : "s")}";
-    }
-
-    private static bool TryDecodeTextContent(uint formatId, string formatName, byte[] bytes,
-        out string text, out string failureMessage, out Encoding? detectedEncoding)
-    {
-        if (!IsTextCompatible(formatId, formatName))
-        {
-            text             = string.Empty;
-            failureMessage   = "Text preview unavailable for this format.";
-            detectedEncoding = null;
-            return false;
-        }
-
-        try
-        {
-            if (formatId == 13) // CF_UNICODETEXT
-            {
-                text             = Encoding.Unicode.GetString(bytes).TrimEnd('\0');
-                detectedEncoding = Encoding.Unicode;
-            }
-            else if (formatId == 1) // CF_TEXT
-            {
-                text             = Encoding.Default.GetString(TrimAtNull(bytes, 1));
-                detectedEncoding = Encoding.Default;
-            }
-            else if (formatId == 7) // CF_OEMTEXT
-            {
-                var oemEncoding  = Encoding.GetEncoding((int)NativeMethods.GetOEMCP());
-                text             = oemEncoding.GetString(TrimAtNull(bytes, 1));
-                detectedEncoding = oemEncoding;
-            }
-            else
-            {
-                text = DecodeWithFallback(bytes, out detectedEncoding);
-            }
-
-            failureMessage = string.Empty;
-            return true;
-        }
-        catch
-        {
-            text             = string.Empty;
-            failureMessage   = "Failed to decode this format as text.";
-            detectedEncoding = null;
-            return false;
-        }
-    }
-
-    private static byte[] TrimAtNull(byte[] bytes, int unitSize)
-    {
-        if (unitSize <= 1)
-        {
-            var index = Array.IndexOf(bytes, (byte)0);
-            if (index < 0)
-            {
-                return bytes;
-            }
-
-            return bytes[..index];
-        }
-
-        for (var i = 0; i <= bytes.Length - unitSize; i += unitSize)
-        {
-            var allZero = true;
-            for (var j = 0; j < unitSize; j++)
-            {
-                if (bytes[i + j] != 0)
-                {
-                    allZero = false;
-                    break;
-                }
-            }
-
-            if (allZero)
-            {
-                return bytes[..i];
-            }
-        }
-
-        return bytes;
-    }
-
-    private enum Utf16Variant { None, LittleEndian, BigEndian }
-
-    private sealed class EncodingItem
-    {
-        public Encoding Encoding    { get; }
-        public string   DisplayText { get; }
-
-        public EncodingItem(Encoding encoding, string displayText)
-        {
-            Encoding    = encoding;
-            DisplayText = displayText;
-        }
-
-        public override string ToString() => DisplayText;
-    }
-
-    /// <summary>
-    /// Detects UTF-16 encoding via BOM or heuristic null-byte pattern.
-    /// For LE, ASCII-range characters place 0x00 at every odd byte position.
-    /// For BE, they place 0x00 at every even byte position.
-    /// </summary>
-    private static Utf16Variant DetectUtf16(byte[] bytes)
-    {
-        if (bytes.Length < 4 || bytes.Length % 2 != 0)
-            return Utf16Variant.None;
-
-        // Explicit BOM takes priority
-        if (bytes[0] == 0xFF && bytes[1] == 0xFE) return Utf16Variant.LittleEndian;
-        if (bytes[0] == 0xFE && bytes[1] == 0xFF) return Utf16Variant.BigEndian;
-
-        // Heuristic: sample up to the first 512 bytes
-        var sampleLen = Math.Min(bytes.Length, 512);
-        var pairs = sampleLen / 2;
-        int nullAtOdd = 0, nullAtEven = 0;
-        for (var i = 0; i < sampleLen - 1; i += 2)
-        {
-            if (bytes[i]     == 0) nullAtEven++;
-            if (bytes[i + 1] == 0) nullAtOdd++;
-        }
-
-        // Require ≥80 % of high bytes to be null AND <5 % of low bytes to be null
-        const double highThreshold = 0.80;
-        const double lowMaxRatio   = 0.05;
-        if ((double)nullAtOdd  / pairs >= highThreshold && (double)nullAtEven / pairs < lowMaxRatio)
-            return Utf16Variant.LittleEndian;
-        if ((double)nullAtEven / pairs >= highThreshold && (double)nullAtOdd  / pairs < lowMaxRatio)
-            return Utf16Variant.BigEndian;
-
-        return Utf16Variant.None;
-    }
-
-    private static string DecodeWithFallback(byte[] bytes, out Encoding usedEncoding)
-    {
-        // UTF-8 BOM
-        if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
-        {
-            usedEncoding = Encoding.UTF8;
-            return Encoding.UTF8.GetString(bytes, 3, bytes.Length - 3).TrimEnd('\0');
-        }
-
-        // UTF-16 LE / BE — BOM or heuristic
-        var utf16 = DetectUtf16(bytes);
-        if (utf16 == Utf16Variant.LittleEndian)
-        {
-            usedEncoding = Encoding.Unicode;
-            var start    = (bytes[0] == 0xFF && bytes[1] == 0xFE) ? 2 : 0;
-            var trimmed  = TrimAtNull(bytes[start..], 2);
-            return Encoding.Unicode.GetString(trimmed).TrimEnd('\0');
-        }
-        if (utf16 == Utf16Variant.BigEndian)
-        {
-            usedEncoding = Encoding.BigEndianUnicode;
-            var start    = (bytes[0] == 0xFE && bytes[1] == 0xFF) ? 2 : 0;
-            var trimmed  = TrimAtNull(bytes[start..], 2);
-            return Encoding.BigEndianUnicode.GetString(trimmed).TrimEnd('\0');
-        }
-
-        // Strict UTF-8, then system ANSI
-        try
-        {
-            usedEncoding = Encoding.UTF8;
-            return new UTF8Encoding(false, true).GetString(bytes).TrimEnd('\0');
-        }
-        catch
-        {
-            usedEncoding = Encoding.Default;
-            return Encoding.Default.GetString(bytes).TrimEnd('\0');
-        }
-    }
-
-    private static bool TryCreateImagePreview(uint formatId, string formatName, byte[] bytes, out BitmapSource? image, out string failureMessage)
-    {
-        image = null;
-        if (!IsImageCompatible(formatId, formatName))
-        {
-            failureMessage = "Image preview unavailable for this format.";
-            return false;
-        }
-
-        if (bytes.Length == 0)
-        {
-            failureMessage = "Image data is empty.";
-            return false;
-        }
-
-        try
-        {
-            if (formatId is 8 or 17 || HBitmapFormats.Contains(formatId))
-            {
-                // CF_DIB, CF_DIBV5, and HBITMAP formats all yield a BITMAPINFOHEADER + pixels block.
-                if (!TryCreateBitmapFromDib(bytes, out image))
-                {
-                    failureMessage = "Failed to decode DIB image data.";
-                    return false;
-                }
-            }
-            else
-            {
-                image = CreateBitmapFromEncodedImage(bytes);
-            }
-
-            failureMessage = string.Empty;
-            return image != null;
-        }
-        catch
-        {
-            image = null;
-            failureMessage = "Failed to decode image preview for this format.";
-            return false;
-        }
-    }
-
-    private static bool IsTextCompatible(uint formatId, string formatName)
-    {
-        var normalized = formatName.ToLowerInvariant();
-        return formatId is 1 or 7 or 13 ||
-               normalized.Contains("text", StringComparison.Ordinal) ||
-               normalized.Contains("html", StringComparison.Ordinal) ||
-               normalized.Contains("rtf", StringComparison.Ordinal) ||
-               normalized.Contains("xml", StringComparison.Ordinal) ||
-               normalized.Contains("json", StringComparison.Ordinal) ||
-               normalized.Contains("csv", StringComparison.Ordinal);
-    }
-
-    private static bool IsImageCompatible(uint formatId, string formatName)
-    {
-        // CF_DIB, CF_DIBV5, CF_BITMAP, CF_DSPBITMAP — all produce DIB bytes.
-        if (formatId is 8 or 17 || HBitmapFormats.Contains(formatId))
-            return true;
-
-        var normalized = formatName.ToLowerInvariant();
-        return normalized.Contains("png",    StringComparison.Ordinal) ||
-               normalized.Contains("jpeg",   StringComparison.Ordinal) ||
-               normalized.Contains("jpg",    StringComparison.Ordinal) ||
-               normalized.Contains("gif",    StringComparison.Ordinal) ||
-               normalized.Contains("dib",    StringComparison.Ordinal) ||
-               normalized.Contains("bitmap", StringComparison.Ordinal) ||
-               normalized.Contains("image",  StringComparison.Ordinal);
-    }
-
-    private static BitmapSource CreateBitmapFromEncodedImage(byte[] bytes)
-    {
-        using var stream = new MemoryStream(bytes, writable: false);
-        var decoder = BitmapDecoder.Create(stream, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
-        var frame = decoder.Frames[0];
-        frame.Freeze();
-        return frame;
-    }
-
-    private static bool TryCreateBitmapFromDib(byte[] dibBytes, out BitmapSource? bitmap)
-    {
-        bitmap = null;
-        if (dibBytes.Length < 40)
-        {
-            return false;
-        }
-
-        var headerSize = BitConverter.ToUInt32(dibBytes, 0);
-        if (headerSize < 40 || headerSize > dibBytes.Length)
-        {
-            return false;
-        }
-
-        var bitCount = BitConverter.ToUInt16(dibBytes, 14);
-        var compression = BitConverter.ToUInt32(dibBytes, 16);
-        var colorsUsed = BitConverter.ToUInt32(dibBytes, 32);
-
-        uint masksSize = 0;
-        if ((compression == 3 || compression == 6) && headerSize == 40)
-        {
-            masksSize = compression == 6 ? 16u : 12u;
-        }
-
-        uint colorTableEntries = colorsUsed;
-        if (colorTableEntries == 0 && bitCount <= 8)
-        {
-            colorTableEntries = 1u << bitCount;
-        }
-
-        var colorTableSize = colorTableEntries * 4;
-        var pixelOffset = 14u + headerSize + masksSize + colorTableSize;
-        if (pixelOffset > dibBytes.Length + 14u)
-        {
-            return false;
-        }
-
-        var fileBytes = new byte[dibBytes.Length + 14];
-        fileBytes[0] = (byte)'B';
-        fileBytes[1] = (byte)'M';
-        BinaryPrimitives.WriteUInt32LittleEndian(fileBytes.AsSpan(2), (uint)fileBytes.Length);
-        BinaryPrimitives.WriteUInt32LittleEndian(fileBytes.AsSpan(10), pixelOffset);
-        Buffer.BlockCopy(dibBytes, 0, fileBytes, 14, dibBytes.Length);
-
-        bitmap = CreateBitmapFromEncodedImage(fileBytes);
-        return true;
     }
 
     private void SetImagePreview(BitmapSource image)
@@ -826,7 +426,7 @@ public partial class MainWindow : Window
         ImagePreview.Source = image;
         ImageStatusTextBlock.Text = string.Empty;
         ZoomSlider.IsEnabled = true;
-        ImageDimensionsWidthTextBlock.Text = $"{image.PixelWidth}px";
+        ImageDimensionsWidthTextBlock.Text  = $"{image.PixelWidth}px";
         ImageDimensionsHeightTextBlock.Text = $"{image.PixelHeight}px";
         ImageDimensionsStackPanel.Visibility = Visibility.Visible;
         SetZoomValue(1);
@@ -859,11 +459,11 @@ public partial class MainWindow : Window
         SetHexPreviewUnavailable("Select a clipboard format to preview.");
         SetTextPreviewUnavailable("Text preview unavailable for this format.");
         SetImagePreviewUnavailable("Image preview unavailable for this format.");
-        TextTabItem.IsEnabled = true;
+        TextTabItem.IsEnabled  = true;
         ImageTabItem.IsEnabled = true;
         ContentTabControl.SelectedIndex = 0;
         ContentTabControl.Visibility = Visibility.Collapsed;
-        NoSelectionPanel.Visibility = Visibility.Visible;
+        NoSelectionPanel.Visibility  = Visibility.Visible;
         _currentFormatBytes = null;
         _currentFormatId    = 0;
         _currentFormatName  = string.Empty;
@@ -899,7 +499,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var viewportWidth = ImageScrollViewer.ViewportWidth;
+        var viewportWidth  = ImageScrollViewer.ViewportWidth;
         var viewportHeight = ImageScrollViewer.ViewportHeight;
         if (viewportWidth <= 0 || viewportHeight <= 0)
         {
@@ -908,8 +508,8 @@ public partial class MainWindow : Window
             return;
         }
 
-        var fitX = viewportWidth / source.PixelWidth;
-        var fitY = viewportHeight / source.PixelHeight;
+        var fitX  = viewportWidth  / source.PixelWidth;
+        var fitY  = viewportHeight / source.PixelHeight;
         _fitScale = Math.Min(1.0, Math.Min(fitX, fitY));
         ApplyImageScale();
     }
@@ -935,7 +535,7 @@ public partial class MainWindow : Window
     private void SetZoomValue(double value)
     {
         _ignoreZoomChanges = true;
-        ZoomSlider.Value = value;
+        ZoomSlider.Value   = value;
         _ignoreZoomChanges = false;
     }
 
@@ -1009,16 +609,16 @@ public partial class MainWindow : Window
 
         e.Handled = true;
 
-        var mousePos    = e.GetPosition(ImageScrollViewer);
+        var mousePos     = e.GetPosition(ImageScrollViewer);
         var currentScale = _fitScale * ZoomSlider.Value;
-        var contentX    = ImageScrollViewer.HorizontalOffset + mousePos.X;
-        var contentY    = ImageScrollViewer.VerticalOffset   + mousePos.Y;
-        var scaledW     = source.PixelWidth  * currentScale;
-        var scaledH     = source.PixelHeight * currentScale;
-        var imageLeft   = Math.Max(0.0, (ImageScrollViewer.ViewportWidth  - scaledW) / 2.0);
-        var imageTop    = Math.Max(0.0, (ImageScrollViewer.ViewportHeight - scaledH) / 2.0);
-        var imgLocalX   = (contentX - imageLeft) / currentScale;
-        var imgLocalY   = (contentY - imageTop)  / currentScale;
+        var contentX     = ImageScrollViewer.HorizontalOffset + mousePos.X;
+        var contentY     = ImageScrollViewer.VerticalOffset   + mousePos.Y;
+        var scaledW      = source.PixelWidth  * currentScale;
+        var scaledH      = source.PixelHeight * currentScale;
+        var imageLeft    = Math.Max(0.0, (ImageScrollViewer.ViewportWidth  - scaledW) / 2.0);
+        var imageTop     = Math.Max(0.0, (ImageScrollViewer.ViewportHeight - scaledH) / 2.0);
+        var imgLocalX    = (contentX - imageLeft) / currentScale;
+        var imgLocalY    = (contentY - imageTop)  / currentScale;
 
         StepZoom(15 * Math.Sign(e.Delta));
 
@@ -1042,10 +642,10 @@ public partial class MainWindow : Window
         }
 
         _isPanning = true;
-        _panStartMouse = e.GetPosition(ImageScrollViewer);
+        _panStartMouse            = e.GetPosition(ImageScrollViewer);
         _panStartHorizontalOffset = ImageScrollViewer.HorizontalOffset;
         _panStartVerticalOffset   = ImageScrollViewer.VerticalOffset;
-        ImageScrollViewer.Cursor = Cursors.ScrollAll;
+        ImageScrollViewer.Cursor  = Cursors.ScrollAll;
         Mouse.Capture(ImageScrollViewer);
         e.Handled = true;
     }
@@ -1103,233 +703,11 @@ public partial class MainWindow : Window
             : null;
     }
 
-    private static bool TryReadClipboardDataBytes(uint formatId, out byte[]? bytes, out string failureMessage)
-    {
-        bytes = null;
-
-        if (NonGlobalMemoryFormats.Contains(formatId))
-        {
-            failureMessage = "Selected format uses a non-memory handle type (not HGLOBAL).";
-            return false;
-        }
-
-        var handle = NativeMethods.GetClipboardData(formatId);
-        if (handle == IntPtr.Zero)
-        {
-            failureMessage = "No data handle is available for this format.";
-            return false;
-        }
-
-        if (HBitmapFormats.Contains(formatId))
-            return TryReadHBitmapAsBytes(handle, out bytes, out failureMessage);
-
-        if (HEnhMetaFileFormats.Contains(formatId))
-            return TryReadEnhMetaFileAsBytes(handle, out bytes, out failureMessage);
-
-        var globalSize = NativeMethods.GlobalSize(handle);
-        if (globalSize == UIntPtr.Zero)
-        {
-            failureMessage = "Clipboard format size is unavailable.";
-            return false;
-        }
-
-        var size64 = (ulong)globalSize;
-        if (size64 > int.MaxValue)
-        {
-            failureMessage = "Clipboard data is too large to render in this viewer.";
-            return false;
-        }
-
-        var dataPtr = NativeMethods.GlobalLock(handle);
-        if (dataPtr == IntPtr.Zero)
-        {
-            failureMessage = "Failed to lock clipboard data.";
-            return false;
-        }
-
-        try
-        {
-            bytes = new byte[(int)size64];
-            Marshal.Copy(dataPtr, bytes, 0, bytes.Length);
-            failureMessage = string.Empty;
-            return true;
-        }
-        finally
-        {
-            if (!NativeMethods.GlobalUnlock(handle))
-            {
-                var error = Marshal.GetLastWin32Error();
-                if (error != 0 && error != ERROR_NOT_LOCKED)
-                {
-                    // Best effort unlock on clipboard-provided memory.
-                }
-            }
-        }
-    }
-
-    private static bool TryReadHBitmapAsBytes(IntPtr hBitmap, out byte[]? bytes, out string failureMessage)
-    {
-        bytes = null;
-
-        if (NativeMethods.GetObject(hBitmap, Marshal.SizeOf<BITMAP>(), out var bm) == 0)
-        {
-            failureMessage = "Failed to read bitmap metadata.";
-            return false;
-        }
-
-        // Request 32 bpp BI_RGB output so there is no colour table to worry about.
-        var header = new BITMAPINFOHEADER
-        {
-            biSize        = (uint)Marshal.SizeOf<BITMAPINFOHEADER>(),
-            biWidth       = bm.bmWidth,
-            biHeight      = bm.bmHeight,   // positive → bottom-up DIB
-            biPlanes      = 1,
-            biBitCount    = 32,
-            biCompression = 0,             // BI_RGB
-        };
-
-        var hdc = NativeMethods.GetDC(IntPtr.Zero);
-        if (hdc == IntPtr.Zero)
-        {
-            failureMessage = "Failed to acquire a device context.";
-            return false;
-        }
-
-        try
-        {
-            var height = (uint)Math.Abs(bm.bmHeight);
-
-            // First call: let GDI fill in biSizeImage.
-            NativeMethods.GetDIBits(hdc, hBitmap, 0, height, null, ref header, 0 /* DIB_RGB_COLORS */);
-
-            if (header.biSizeImage == 0)
-            {
-                var stride = (bm.bmWidth * 32 + 31) / 32 * 4;
-                header.biSizeImage = (uint)(stride * height);
-            }
-
-            var pixelData = new byte[header.biSizeImage];
-            if (NativeMethods.GetDIBits(hdc, hBitmap, 0, height, pixelData, ref header, 0) == 0)
-            {
-                failureMessage = "Failed to retrieve bitmap pixel data.";
-                return false;
-            }
-
-            // Assemble a CF_DIB-compatible block: BITMAPINFOHEADER immediately followed by pixels.
-            var headerSize = Marshal.SizeOf<BITMAPINFOHEADER>();
-            bytes = new byte[headerSize + pixelData.Length];
-
-            var pin = GCHandle.Alloc(bytes, GCHandleType.Pinned);
-            try   { Marshal.StructureToPtr(header, pin.AddrOfPinnedObject(), fDeleteOld: false); }
-            finally { pin.Free(); }
-
-            Buffer.BlockCopy(pixelData, 0, bytes, headerSize, pixelData.Length);
-            failureMessage = string.Empty;
-            return true;
-        }
-        finally
-        {
-            NativeMethods.ReleaseDC(IntPtr.Zero, hdc);
-        }
-    }
-
-    private static bool TryReadEnhMetaFileAsBytes(IntPtr hEmf, out byte[]? bytes, out string failureMessage)
-    {
-        bytes = null;
-
-        var size = NativeMethods.GetEnhMetaFileBits(hEmf, 0, null);
-        if (size == 0)
-        {
-            failureMessage = "Failed to determine EMF data size.";
-            return false;
-        }
-
-        bytes = new byte[size];
-        if (NativeMethods.GetEnhMetaFileBits(hEmf, size, bytes) != size)
-        {
-            bytes = null;
-            failureMessage = "Failed to read EMF data.";
-            return false;
-        }
-
-        failureMessage = string.Empty;
-        return true;
-    }
-
-    private static bool TryGetClipboardDataSize(uint format, out ulong sizeBytes)
-    {
-        sizeBytes = 0;
-
-        if (NonGlobalMemoryFormats.Contains(format))
-            return false;
-
-        var handle = NativeMethods.GetClipboardData(format);
-        if (handle == IntPtr.Zero)
-            return false;
-
-        if (HBitmapFormats.Contains(format))
-        {
-            if (NativeMethods.GetObject(handle, Marshal.SizeOf<BITMAP>(), out var bm) == 0)
-                return false;
-            var stride = (bm.bmWidth * bm.bmBitsPixel + 31) / 32 * 4;
-            sizeBytes = (ulong)(Math.Abs(bm.bmHeight) * stride * bm.bmPlanes);
-            return sizeBytes > 0;
-        }
-
-        if (HEnhMetaFileFormats.Contains(format))
-        {
-            var emfSize = NativeMethods.GetEnhMetaFileBits(handle, 0, null);
-            if (emfSize == 0)
-                return false;
-            sizeBytes = emfSize;
-            return true;
-        }
-
-        var size = NativeMethods.GlobalSize(handle);
-        if (size == UIntPtr.Zero)
-            return false;
-
-        sizeBytes = (ulong)size;
-        return true;
-    }
-
-    private static bool TryOpenClipboard(IntPtr owner)
-    {
-        for (var attempt = 0; attempt < 10; attempt++)
-        {
-            if (NativeMethods.OpenClipboard(owner))
-            {
-                return true;
-            }
-
-            Thread.Sleep(20);
-        }
-
-        return false;
-    }
-
-    private static string GetFormatDisplayName(uint format)
-    {
-        if (WellKnownFormats.TryGetValue(format, out var wellKnownName))
-        {
-            return wellKnownName;
-        }
-
-        var buffer = new StringBuilder(256);
-        var chars = NativeMethods.GetClipboardFormatName(format, buffer, buffer.Capacity);
-        if (chars > 0)
-        {
-            return buffer.ToString();
-        }
-
-        return "Unknown";
-    }
-
     private void UpdateStatusBar()
     {
         if (_isMonitoring && _isTrackingHistory)
         {
-            var size = ClipboardHistory.GetDatabaseFileSize();
+            var size = _history.GetDatabaseFileSize();
             StatusText.Text = $"Monitoring... · Tracking history ({FormatFileSize(size)} storage size)...";
         }
         else
@@ -1351,13 +729,6 @@ public partial class MainWindow : Window
         FileStatusText.Text = $"{action}: {Path.GetFileName(path)}";
         FileStatusSeparator.Visibility = Visibility.Visible;
     }
-
-    // Returns the clipboard handle-type tag that matches how Windows stores this format.
-    private static string GetHandleType(uint formatId) =>
-        HBitmapFormats.Contains(formatId)        ? "hbitmap"       :
-        HEnhMetaFileFormats.Contains(formatId)   ? "henhmetafile"  :
-        NonGlobalMemoryFormats.Contains(formatId) ? "none"         :
-        "hglobal";
 
     private void RefreshClipboardCommand_Executed(object sender, ExecutedRoutedEventArgs e)
     {
@@ -1419,8 +790,8 @@ public partial class MainWindow : Window
         // History tracking requires monitoring — stop it if monitoring is turned off.
         if (!_isMonitoring && _isTrackingHistory)
         {
-            _isTrackingHistory               = false;
-            MenuItemTrackHistory.IsChecked   = false;
+            _isTrackingHistory             = false;
+            MenuItemTrackHistory.IsChecked = false;
             HideHistoryPanel();
             _historyItems.Clear();
             _historySnapshots = null;
@@ -1446,7 +817,7 @@ public partial class MainWindow : Window
 
     private void MenuItemSettings_Click(object sender, RoutedEventArgs e)
     {
-        var dlg = new SettingsDialog(_historyMaxEntries, _historyMaxSizeMb) { Owner = this };
+        var dlg = new SettingsDialog(_historyMaxEntries, _historyMaxSizeMb, _history) { Owner = this };
         var result = dlg.ShowDialog();
 
         if (dlg.HistoryWasCleared)
@@ -1467,9 +838,6 @@ public partial class MainWindow : Window
 
             // Enforce new limits against any existing database, regardless of whether
             // history tracking is currently on (old data may still need trimming).
-            // Skip if the channel already has pending items: the consumer will call
-            // TrimToLimits() itself as part of processing each AddSession, so there
-            // is no need to queue a redundant standalone enforcement pass.
             if (_historyChannel.Reader.Count == 0)
             {
                 var maxEntries      = _historyMaxEntries;
@@ -1477,13 +845,11 @@ public partial class MainWindow : Window
                 var trackingHistory = _isTrackingHistory;
                 _historyChannel.Writer.TryWrite(() =>
                 {
-                    var removed = ClipboardHistory.EnforceLimits(maxEntries, maxBytes);
+                    var removed = _history.EnforceLimits(maxEntries, maxBytes);
                     if (removed || trackingHistory)
                     {
                         Dispatcher.InvokeAsync(() =>
                         {
-                            // Reload the list only if rows were actually deleted and the
-                            // history panel is visible — otherwise nothing changed.
                             if (removed && trackingHistory)
                             {
                                 if (_historySnapshots != null)
@@ -1581,7 +947,6 @@ public partial class MainWindow : Window
         bool textAvailable  = _currentAutoDetectedEncoding != null;
         bool imageAvailable = ImagePreview.Source is BitmapSource;
 
-        // Build filter list in display order
         var filters = new List<(string FilterPart, string Ext)>();
         if (textAvailable)
             filters.Add(("Text (*.txt)|*.txt", ".txt"));
@@ -1592,7 +957,6 @@ public partial class MainWindow : Window
         }
         filters.Add(("Binary Data (*.bin)|*.bin", ".bin"));
 
-        // Determine the 1-based default filter index
         int defaultFilter;
         if (textAvailable)
         {
@@ -1675,7 +1039,6 @@ public partial class MainWindow : Window
         var norm = _currentFormatName.ToLowerInvariant();
         if (norm.Contains("jpeg") || norm.Contains("jpg"))
         {
-            // Source is already JPEG — write raw bytes to preserve original quality.
             File.WriteAllBytes(path, _currentFormatBytes!);
         }
         else
@@ -1699,7 +1062,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (!TryOpenClipboard(IntPtr.Zero))
+        if (!_clipboardReader.TryOpenClipboard(IntPtr.Zero))
         {
             MessageBox.Show(this,
                 "Unable to open the clipboard for reading.\n\nClose any application that may be using the clipboard and try again.",
@@ -1713,20 +1076,20 @@ public partial class MainWindow : Window
             formats = new List<SavedClipboardFormat>(_formats.Count);
             foreach (var item in _formats)
             {
-                var handleType = GetHandleType(item.FormatId);
-                byte[]? data = null;
+                var handleType = _clipboardReader.GetHandleType(item.FormatId);
+                byte[]? data   = null;
                 if (handleType != "none")
-                    TryReadClipboardDataBytes(item.FormatId, out data, out _);
+                    _clipboardReader.TryReadFormatBytes(item.FormatId, handleType, out data, out _);
 
                 formats.Add(new SavedClipboardFormat(item.Ordinal, item.FormatId, item.Name, handleType, data));
             }
         }
         finally
         {
-            NativeMethods.CloseClipboard();
+            _clipboardReader.CloseClipboard();
         }
 
-        ClipboardDatabase.Save(path, formats);
+        _clipboardFiles.Save(path, formats);
         _currentFilePath = path;
         UpdateFileStatusBar("Saved", path);
     }
@@ -1735,7 +1098,7 @@ public partial class MainWindow : Window
 
     private void LoadFromFile(string path)
     {
-        var formats = ClipboardDatabase.Load(path);
+        var formats = _clipboardFiles.Load(path);
 
         if (formats.Count == 0)
         {
@@ -1745,7 +1108,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (!TryOpenClipboard(_hwndSource?.Handle ?? IntPtr.Zero))
+        if (!_clipboardReader.TryOpenClipboard(_hwndSource?.Handle ?? IntPtr.Zero))
         {
             MessageBox.Show(this,
                 "Unable to open the clipboard for writing.\n\nClose any application that may be using the clipboard and try again.",
@@ -1756,115 +1119,18 @@ public partial class MainWindow : Window
         try
         {
             NativeMethods.EmptyClipboard();
-            foreach (var fmt in formats)
-                RestoreFormat(fmt);
+            _clipboardWriter.RestoreFormats(formats);
         }
         finally
         {
-            NativeMethods.CloseClipboard();
+            _clipboardReader.CloseClipboard();
         }
 
         _currentFilePath = path;
         UpdateFileStatusBar("Loaded", path);
 
-        // When monitoring is active, WM_CLIPBOARDUPDATE fires automatically
-        // and refreshes the list; refresh manually only when monitoring is off.
         if (!_isMonitoring)
             RefreshFormats();
-    }
-
-    private static void RestoreFormat(SavedClipboardFormat fmt)
-    {
-        // Custom format IDs (≥ 0xC000) are assigned dynamically per Windows session;
-        // re-register by name to get the current-session ID.
-        uint actualId = fmt.FormatId >= 0xC000
-            ? NativeMethods.RegisterClipboardFormat(fmt.FormatName)
-            : fmt.FormatId;
-
-        if (actualId == 0)
-            return;
-
-        switch (fmt.HandleType)
-        {
-            case "hglobal":
-                RestoreAsHGlobal(actualId, fmt.Data);
-                break;
-            case "hbitmap":
-                RestoreAsHBitmap(actualId, fmt.Data);
-                break;
-            case "henhmetafile":
-                RestoreAsHEnhMetaFile(actualId, fmt.Data);
-                break;
-            // "none" (e.g. CF_PALETTE): no bytes were captured; skip silently.
-        }
-    }
-
-    private static void RestoreAsHGlobal(uint formatId, byte[]? data)
-    {
-        if (data is not { Length: > 0 })
-            return;
-
-        const uint GMEM_MOVEABLE = 0x0002;
-        var hGlobal = NativeMethods.GlobalAlloc(GMEM_MOVEABLE, (UIntPtr)(uint)data.Length);
-        if (hGlobal == IntPtr.Zero)
-            return;
-
-        var ptr = NativeMethods.GlobalLock(hGlobal);
-        if (ptr == IntPtr.Zero)
-        {
-            NativeMethods.GlobalFree(hGlobal);
-            return;
-        }
-
-        try   { Marshal.Copy(data, 0, ptr, data.Length); }
-        finally { NativeMethods.GlobalUnlock(hGlobal); }
-
-        if (NativeMethods.SetClipboardData(formatId, hGlobal) == IntPtr.Zero)
-            NativeMethods.GlobalFree(hGlobal);
-    }
-
-    private static void RestoreAsHEnhMetaFile(uint formatId, byte[]? data)
-    {
-        if (data is not { Length: > 0 })
-            return;
-
-        var hemf = NativeMethods.SetEnhMetaFileBits((uint)data.Length, data);
-        if (hemf == IntPtr.Zero)
-            return;
-
-        if (NativeMethods.SetClipboardData(formatId, hemf) == IntPtr.Zero)
-            NativeMethods.DeleteEnhMetaFile(hemf);
-    }
-
-    private static void RestoreAsHBitmap(uint formatId, byte[]? data)
-    {
-        var headerSize = Marshal.SizeOf<BITMAPINFOHEADER>();
-        if (data == null || data.Length <= headerSize)
-            return;
-
-        // The stored block is BITMAPINFOHEADER + pixel data (produced by GetDIBits, 32 bpp BI_RGB).
-        var header    = MemoryMarshal.Read<BITMAPINFOHEADER>(data.AsSpan(0, headerSize));
-        var pixelData = data.AsSpan(headerSize).ToArray();
-
-        var hdc = NativeMethods.GetDC(IntPtr.Zero);
-        if (hdc == IntPtr.Zero)
-            return;
-
-        try
-        {
-            const uint CBM_INIT        = 4;
-            const uint DIB_RGB_COLORS  = 0;
-            var hBitmap = NativeMethods.CreateDIBitmap(hdc, ref header, CBM_INIT, pixelData, ref header, DIB_RGB_COLORS);
-            if (hBitmap == IntPtr.Zero)
-                return;
-
-            if (NativeMethods.SetClipboardData(formatId, hBitmap) == IntPtr.Zero)
-                NativeMethods.DeleteObject(hBitmap);
-        }
-        finally
-        {
-            NativeMethods.ReleaseDC(IntPtr.Zero, hdc);
-        }
     }
 
     // ── Error reporting ─────────────────────────────────────────────────────
@@ -1919,7 +1185,7 @@ public partial class MainWindow : Window
         }
         else
         {
-            _currentSortProperty = requestedProperty;
+            _currentSortProperty  = requestedProperty;
             _currentSortDirection = ListSortDirection.Ascending;
         }
 
@@ -1961,21 +1227,10 @@ public partial class MainWindow : Window
     {
         _storedColumnPreferences = [];
 
+        var preferences = _preferences.Load();
+
         try
         {
-            var path = GetPreferencesFilePath();
-            if (!File.Exists(path))
-            {
-                return;
-            }
-
-            var json = File.ReadAllText(path);
-            var preferences = JsonSerializer.Deserialize<UserPreferences>(json);
-            if (preferences == null)
-            {
-                return;
-            }
-
             if (!string.IsNullOrWhiteSpace(preferences.SortProperty) && IsSupportedSortProperty(preferences.SortProperty))
             {
                 _currentSortProperty = preferences.SortProperty;
@@ -1997,7 +1252,7 @@ public partial class MainWindow : Window
 
                     _storedColumnPreferences.Add(new FormatColumnPreference
                     {
-                        Key = column.Key,
+                        Key   = column.Key,
                         Width = column.Width
                     });
                 }
@@ -2022,33 +1277,18 @@ public partial class MainWindow : Window
 
     private void SavePreferences()
     {
-        try
+        var preferences = new UserPreferences
         {
-            var path = GetPreferencesFilePath();
-            var directory = Path.GetDirectoryName(path);
-            if (!string.IsNullOrWhiteSpace(directory))
-            {
-                Directory.CreateDirectory(directory);
-            }
+            SortProperty      = _currentSortProperty,
+            SortDirection     = _currentSortDirection.ToString(),
+            FormatColumns     = CaptureFormatColumnPreferences(),
+            MonitorChanges    = _isMonitoring,
+            TrackHistory      = _isTrackingHistory,
+            HistoryMaxEntries = _historyMaxEntries,
+            HistoryMaxSizeMb  = _historyMaxSizeMb,
+        };
 
-            var preferences = new UserPreferences
-            {
-                SortProperty      = _currentSortProperty,
-                SortDirection     = _currentSortDirection.ToString(),
-                FormatColumns     = CaptureFormatColumnPreferences(),
-                MonitorChanges    = _isMonitoring,
-                TrackHistory      = _isTrackingHistory,
-                HistoryMaxEntries = _historyMaxEntries,
-                HistoryMaxSizeMb  = _historyMaxSizeMb,
-            };
-
-            var json = JsonSerializer.Serialize(preferences, new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(path, json);
-        }
-        catch
-        {
-            // Ignore preference persistence failures.
-        }
+        _preferences.Save(preferences);
     }
 
     private void ApplyFormatColumnPreferences()
@@ -2112,7 +1352,7 @@ public partial class MainWindow : Window
 
     private List<FormatColumnPreference> CaptureFormatColumnPreferences()
     {
-        var result = new List<FormatColumnPreference>();
+        var result   = new List<FormatColumnPreference>();
         var gridView = GetFormatGridView();
         if (gridView == null)
         {
@@ -2128,7 +1368,7 @@ public partial class MainWindow : Window
 
             result.Add(new FormatColumnPreference
             {
-                Key = key,
+                Key   = key,
                 Width = column.Width > 0 ? column.Width : null
             });
         }
@@ -2157,9 +1397,9 @@ public partial class MainWindow : Window
     private void UpdateSortIndicators()
     {
         OrdinalColumnHeader.Content = "#";
-        IdColumnHeader.Content = "ID";
-        FormatColumnHeader.Content = "Format";
-        SizeColumnHeader.Content = "Size";
+        IdColumnHeader.Content      = "ID";
+        FormatColumnHeader.Content  = "Format";
+        SizeColumnHeader.Content    = "Size";
 
         var currentHeader = GetHeaderBySortProperty(_currentSortProperty);
         if (currentHeader == null)
@@ -2175,9 +1415,9 @@ public partial class MainWindow : Window
     {
         return propertyName switch
         {
-            nameof(ClipboardFormatItem.Ordinal) => OrdinalColumnHeader,
-            nameof(ClipboardFormatItem.FormatId) => IdColumnHeader,
-            nameof(ClipboardFormatItem.Name) => FormatColumnHeader,
+            nameof(ClipboardFormatItem.Ordinal)          => OrdinalColumnHeader,
+            nameof(ClipboardFormatItem.FormatId)         => IdColumnHeader,
+            nameof(ClipboardFormatItem.Name)             => FormatColumnHeader,
             nameof(ClipboardFormatItem.ContentSizeValue) => SizeColumnHeader,
             _ => null
         };
@@ -2187,18 +1427,12 @@ public partial class MainWindow : Window
     {
         return propertyName switch
         {
-            nameof(ClipboardFormatItem.Ordinal) => "#",
-            nameof(ClipboardFormatItem.FormatId) => "ID",
-            nameof(ClipboardFormatItem.Name) => "Format",
+            nameof(ClipboardFormatItem.Ordinal)          => "#",
+            nameof(ClipboardFormatItem.FormatId)         => "ID",
+            nameof(ClipboardFormatItem.Name)             => "Format",
             nameof(ClipboardFormatItem.ContentSizeValue) => "Size",
             _ => propertyName
         };
-    }
-
-    private static string GetPreferencesFilePath()
-    {
-        var appData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        return Path.Combine(appData, "Simply.ClipboardMonitor", PreferencesFileName);
     }
 
     // ── Clipboard History ────────────────────────────────────────────────────
@@ -2236,7 +1470,7 @@ public partial class MainWindow : Window
         List<FormatSnapshot> snapshots;
         try
         {
-            snapshots = ClipboardHistory.LoadSessionFormats(entry.SessionId);
+            snapshots = _history.LoadSessionFormats(entry.SessionId);
         }
         catch
         {
@@ -2265,7 +1499,7 @@ public partial class MainWindow : Window
         var timestamp   = DateTime.Now;
         var formatItems = _formats.ToList();  // snapshot on UI thread
 
-        if (!TryOpenClipboard(IntPtr.Zero))
+        if (!_clipboardReader.TryOpenClipboard(IntPtr.Zero))
             return;
 
         var snapshots = new List<FormatSnapshot>(formatItems.Count);
@@ -2273,10 +1507,10 @@ public partial class MainWindow : Window
         {
             foreach (var item in formatItems)
             {
-                var handleType = GetHandleType(item.FormatId);
+                var handleType = _clipboardReader.GetHandleType(item.FormatId);
                 byte[]? data   = null;
                 if (handleType != "none")
-                    TryReadClipboardDataBytes(item.FormatId, out data, out _);
+                    _clipboardReader.TryReadFormatBytes(item.FormatId, handleType, out data, out _);
 
                 // Prefer the actual byte length; fall back to the size already measured
                 // by RefreshFormats for formats whose data could not be read as a byte[].
@@ -2289,14 +1523,14 @@ public partial class MainWindow : Window
         }
         finally
         {
-            NativeMethods.CloseClipboard();
+            _clipboardReader.CloseClipboard();
         }
 
         // If the sequence number advanced since WM_CLIPBOARDUPDATE arrived, a
         // delayed-rendering provider rendered data and posted a fresh
         // WM_CLIPBOARDUPDATE.  Skip this capture; the next message will capture
         // the fully-rendered clipboard and avoids creating a duplicate entry.
-        if (NativeMethods.GetClipboardSequenceNumber() != seqAtArrival)
+        if (_clipboardReader.GetSequenceNumber() != seqAtArrival)
             return;
 
         _historyChannel.Writer.TryWrite(() => WriteHistorySession(snapshots, timestamp));
@@ -2318,7 +1552,7 @@ public partial class MainWindow : Window
 
         var formatItems = _formats.ToList();
 
-        if (!TryOpenClipboard(IntPtr.Zero))
+        if (!_clipboardReader.TryOpenClipboard(IntPtr.Zero))
             return;
 
         var snapshot = new Dictionary<string, FormatSnapshot>(StringComparer.Ordinal);
@@ -2326,10 +1560,10 @@ public partial class MainWindow : Window
         {
             foreach (var item in formatItems)
             {
-                var handleType = GetHandleType(item.FormatId);
+                var handleType = _clipboardReader.GetHandleType(item.FormatId);
                 byte[]? data   = null;
                 if (handleType != "none")
-                    TryReadClipboardDataBytes(item.FormatId, out data, out _);
+                    _clipboardReader.TryReadFormatBytes(item.FormatId, handleType, out data, out _);
 
                 var originalSize = data?.LongLength
                     ?? (item.ContentSizeValue >= 0 ? item.ContentSizeValue : 0L);
@@ -2340,7 +1574,7 @@ public partial class MainWindow : Window
         }
         finally
         {
-            NativeMethods.CloseClipboard();
+            _clipboardReader.CloseClipboard();
         }
 
         _staticSnapshot = snapshot;
@@ -2367,11 +1601,16 @@ public partial class MainWindow : Window
         try
         {
             var maxDatabaseBytes = (long)_historyMaxSizeMb * 1024L * 1024L;
-            var (sessionId, trimmed) = ClipboardHistory.AddSession(snapshots, timestamp, _historyMaxEntries, maxDatabaseBytes);
-            var formatsText = ClipboardHistory.BuildFormatsText(snapshots);
+            var (sessionId, trimmed) = _history.AddSession(snapshots, timestamp, _historyMaxEntries, maxDatabaseBytes);
+            var formatsText = _history.BuildFormatsText(snapshots);
             var totalSize   = snapshots.Sum(s => s.OriginalSize);
 
             var formats = snapshots.Select(s => (s.FormatId, s.FormatName)).ToList();
+
+            // Build pills and tooltip on the background thread (they are read-only
+            // after construction and the service is thread-safe).
+            var pills   = _formatClassifier.ComputePills(formats);
+            var tooltip = _formatClassifier.ComputeTooltip(formats);
 
             Dispatcher.InvokeAsync(() =>
             {
@@ -2387,11 +1626,13 @@ public partial class MainWindow : Window
                 {
                     var entry = new HistoryItem
                     {
-                        SessionId   = sessionId,
-                        Timestamp   = timestamp,
-                        FormatsText = formatsText,
-                        TotalSize   = totalSize,
-                        Formats     = formats,
+                        SessionId      = sessionId,
+                        Timestamp      = timestamp,
+                        FormatsText    = formatsText,
+                        TotalSize      = totalSize,
+                        Formats        = formats,
+                        Pills          = pills,
+                        FormatsTooltip = tooltip,
                     };
                     _historyItems.Insert(0, entry);
                     HistoryListView.SelectedItem = entry;
@@ -2409,17 +1650,22 @@ public partial class MainWindow : Window
     {
         try
         {
-            var sessions = ClipboardHistory.LoadSessions();
+            var sessions = _history.LoadSessions();
             _historyItems.Clear();
             foreach (var session in sessions)
             {
+                var pills   = _formatClassifier.ComputePills(session.Formats);
+                var tooltip = _formatClassifier.ComputeTooltip(session.Formats);
+
                 _historyItems.Add(new HistoryItem
                 {
-                    SessionId   = session.SessionId,
-                    Timestamp   = session.Timestamp,
-                    FormatsText = session.FormatsText,
-                    TotalSize   = session.TotalSize,
-                    Formats     = session.Formats,
+                    SessionId      = session.SessionId,
+                    Timestamp      = session.Timestamp,
+                    FormatsText    = session.FormatsText,
+                    TotalSize      = session.TotalSize,
+                    Formats        = session.Formats,
+                    Pills          = pills,
+                    FormatsTooltip = tooltip,
                 });
             }
         }
@@ -2427,70 +1673,6 @@ public partial class MainWindow : Window
         {
             // Silently ignore load failures.
         }
-    }
-
-    // ── Format pill classification ────────────────────────────────────────────
-
-    private static bool IsImageFormat(uint id, string name)
-    {
-        // CF_BITMAP (2), CF_DIB (8), CF_DIBV5 (17), CF_DSPBITMAP (0x82)
-        if (id is 2 or 8 or 17 or 0x0082) return true;
-        var n = name.ToLowerInvariant();
-        return n.Contains("png")    || n.Contains("jpeg") || n.Contains("jpg") ||
-               n.Contains("dib")    || n.Contains("bitmap") || n.Contains("image");
-    }
-
-    private static bool IsHtmlFormat(string name) =>
-        name.Contains("html", StringComparison.OrdinalIgnoreCase);
-
-    private static bool IsRtfFormat(string name) =>
-        name.Contains("rtf", StringComparison.OrdinalIgnoreCase) ||
-        name.Contains("rich text", StringComparison.OrdinalIgnoreCase);
-
-    private static bool IsTextFormat(uint id, string name)
-    {
-        // CF_TEXT (1), CF_OEMTEXT (7), CF_UNICODETEXT (13)
-        if (id is 1 or 7 or 13) return true;
-        // Name-based: "text"-like, but not HTML or RTF (those have their own pills)
-        return name.Contains("text", StringComparison.OrdinalIgnoreCase) &&
-               !IsHtmlFormat(name) && !IsRtfFormat(name);
-    }
-
-    private static bool IsFileFormat(uint id) => id == 15; // CF_HDROP
-
-    private static IReadOnlyList<FormatPill> ComputePills(
-        IReadOnlyList<(uint FormatId, string FormatName)> formats)
-    {
-        bool hasI = false, hasT = false, hasH = false, hasR = false, hasF = false, hasO = false;
-        foreach (var (id, name) in formats)
-        {
-            if      (IsImageFormat(id, name)) hasI = true;
-            else if (IsHtmlFormat(name))      hasH = true;
-            else if (IsRtfFormat(name))       hasR = true;
-            else if (IsTextFormat(id, name))  hasT = true;
-            else if (IsFileFormat(id))        hasF = true;
-            else                              hasO = true;
-        }
-
-        var pills = new List<FormatPill>(6);
-        if (hasI) pills.Add(new FormatPill { Label = "IMG",   Background = PillBrushImage });
-        if (hasT) pills.Add(new FormatPill { Label = "TXT",   Background = PillBrushText  });
-        if (hasH) pills.Add(new FormatPill { Label = "HTML",  Background = PillBrushHtml  });
-        if (hasR) pills.Add(new FormatPill { Label = "RTF",   Background = PillBrushRtf   });
-        if (hasF) pills.Add(new FormatPill { Label = "FILE",  Background = PillBrushFile  });
-        // "OTHER" is a fallback shown only when no well-known format category was recognised.
-        if (hasO && pills.Count == 0) pills.Add(new FormatPill { Label = "OTHER", Background = PillBrushOther });
-        return pills;
-    }
-
-    private static string ComputeFormatsTooltip(
-        IReadOnlyList<(uint FormatId, string FormatName)> formats)
-    {
-        var sb = new StringBuilder();
-        sb.Append($"{formats.Count} format{(formats.Count == 1 ? "" : "s")}");
-        foreach (var (id, name) in formats)
-            sb.Append($"\n{name} ({id})");
-        return sb.ToString();
     }
 
     private void ShowHistoryPanel()
@@ -2504,9 +1686,4 @@ public partial class MainWindow : Window
         LeftPanelGrid.RowDefinitions[1].Height = new GridLength(0);
         LeftPanelGrid.RowDefinitions[2].Height = new GridLength(0);
     }
-
 }
-
-
-
-

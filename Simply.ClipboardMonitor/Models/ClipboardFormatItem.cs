@@ -1,6 +1,6 @@
-namespace Simply.ClipboardMonitor.Common;
+namespace Simply.ClipboardMonitor.Models;
 
-internal sealed class ClipboardFormatItem(int ordinal, uint formatId, string name, string contentSize, long contentSizeValue)
+public sealed class ClipboardFormatItem(int ordinal, uint formatId, string name, string contentSize, long contentSizeValue)
 {
     public int Ordinal { get; } = ordinal;
     public uint FormatId { get; } = formatId;

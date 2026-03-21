@@ -31,93 +31,101 @@ internal struct BITMAPINFOHEADER
     public uint  biClrImportant;
 }
 
-internal static class NativeMethods
+internal static partial class NativeMethods
 {
-    [DllImport("user32.dll", SetLastError = true)]
-    internal static extern bool AddClipboardFormatListener(IntPtr hwnd);
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool AddClipboardFormatListener(IntPtr hwnd);
 
-    [DllImport("user32.dll", SetLastError = true)]
-    internal static extern bool RemoveClipboardFormatListener(IntPtr hwnd);
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool RemoveClipboardFormatListener(IntPtr hwnd);
 
-    [DllImport("user32.dll", SetLastError = true)]
-    internal static extern bool OpenClipboard(IntPtr hWndNewOwner);
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool OpenClipboard(IntPtr hWndNewOwner);
 
-    [DllImport("user32.dll", SetLastError = true)]
-    internal static extern bool CloseClipboard();
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool CloseClipboard();
 
-    [DllImport("user32.dll")]
-    internal static extern int CountClipboardFormats();
+    [LibraryImport("user32.dll")]
+    internal static partial int CountClipboardFormats();
 
-    [DllImport("user32.dll", SetLastError = true)]
-    internal static extern uint EnumClipboardFormats(uint format);
+    [LibraryImport("user32.dll", SetLastError = true)]
+    internal static partial uint EnumClipboardFormats(uint format);
 
-    [DllImport("user32.dll", SetLastError = true)]
-    internal static extern IntPtr GetClipboardData(uint uFormat);
+    [LibraryImport("user32.dll", SetLastError = true)]
+    internal static partial IntPtr GetClipboardData(uint uFormat);
 
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    internal static extern int GetClipboardFormatName(uint format, StringBuilder lpszFormatName, int cchMaxCount);
+    [LibraryImport("user32.dll", EntryPoint = "GetClipboardFormatNameW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+    internal static partial int GetClipboardFormatName(uint format, Span<char> lpszFormatName, int cchMaxCount);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    internal static extern IntPtr GlobalLock(IntPtr hMem);
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    internal static partial IntPtr GlobalLock(IntPtr hMem);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    internal static extern bool GlobalUnlock(IntPtr hMem);
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool GlobalUnlock(IntPtr hMem);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    internal static extern UIntPtr GlobalSize(IntPtr hMem);
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    internal static partial UIntPtr GlobalSize(IntPtr hMem);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    internal static extern uint GetOEMCP();
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    internal static partial uint GetOEMCP();
 
-    [DllImport("gdi32.dll", SetLastError = true)]
-    internal static extern int GetObject(IntPtr h, int c, out BITMAP pv);
+    [LibraryImport("gdi32.dll", EntryPoint = "GetObjectW", SetLastError = true)]
+    internal static partial int GetObject(IntPtr h, int c, out BITMAP pv);
 
-    [DllImport("gdi32.dll", SetLastError = true)]
-    internal static extern int GetDIBits(IntPtr hdc, IntPtr hbm, uint start, uint cLines,
+    [LibraryImport("gdi32.dll", SetLastError = true)]
+    internal static partial int GetDIBits(IntPtr hdc, IntPtr hbm, uint start, uint cLines,
         byte[]? lpvBits, ref BITMAPINFOHEADER lpbmi, uint usage);
 
-    [DllImport("user32.dll")]
-    internal static extern IntPtr GetDC(IntPtr hwnd);
+    [LibraryImport("user32.dll")]
+    internal static partial IntPtr GetDC(IntPtr hwnd);
 
-    [DllImport("user32.dll")]
-    internal static extern int ReleaseDC(IntPtr hwnd, IntPtr hdc);
+    [LibraryImport("user32.dll")]
+    internal static partial int ReleaseDC(IntPtr hwnd, IntPtr hdc);
 
-    [DllImport("gdi32.dll", SetLastError = true)]
-    internal static extern uint GetEnhMetaFileBits(IntPtr hemf, uint cbBuffer, byte[]? lpData);
+    [LibraryImport("gdi32.dll", SetLastError = true)]
+    internal static partial uint GetEnhMetaFileBits(IntPtr hemf, uint cbBuffer, byte[]? lpData);
 
     // ── Clipboard write (used for save/load) ────────────────────────────────
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    internal static extern IntPtr GlobalAlloc(uint uFlags, UIntPtr dwBytes);
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    internal static partial IntPtr GlobalAlloc(uint uFlags, UIntPtr dwBytes);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    internal static extern IntPtr GlobalFree(IntPtr hMem);
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    internal static partial IntPtr GlobalFree(IntPtr hMem);
 
-    [DllImport("user32.dll", SetLastError = true)]
-    internal static extern bool EmptyClipboard();
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool EmptyClipboard();
 
-    [DllImport("user32.dll", SetLastError = true)]
-    internal static extern IntPtr SetClipboardData(uint uFormat, IntPtr hMem);
+    [LibraryImport("user32.dll", SetLastError = true)]
+    internal static partial IntPtr SetClipboardData(uint uFormat, IntPtr hMem);
 
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    internal static extern uint RegisterClipboardFormat(string lpszFormat);
+    [LibraryImport("user32.dll", EntryPoint = "RegisterClipboardFormatW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
+    internal static partial uint RegisterClipboardFormat(string lpszFormat);
 
     // Creates an HENHMETAFILE from a raw EMF byte stream.
-    [DllImport("gdi32.dll", SetLastError = true)]
-    internal static extern IntPtr SetEnhMetaFileBits(uint nSize, byte[] pb);
+    [LibraryImport("gdi32.dll", SetLastError = true)]
+    internal static partial IntPtr SetEnhMetaFileBits(uint nSize, byte[] pb);
 
-    [DllImport("gdi32.dll", SetLastError = true)]
-    internal static extern bool DeleteEnhMetaFile(IntPtr hemf);
+    [LibraryImport("gdi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool DeleteEnhMetaFile(IntPtr hemf);
 
     // Creates an HBITMAP device-dependent bitmap from a DIB.
     // lpbmih: pointer to BITMAPINFOHEADER; pjBits: pixel data; lpbmi: BITMAPINFO (= header for 32 bpp BI_RGB).
-    [DllImport("gdi32.dll", SetLastError = true)]
-    internal static extern IntPtr CreateDIBitmap(IntPtr hdc, ref BITMAPINFOHEADER lpbmih,
+    [LibraryImport("gdi32.dll", SetLastError = true)]
+    internal static partial IntPtr CreateDIBitmap(IntPtr hdc, ref BITMAPINFOHEADER lpbmih,
         uint fdwInit, byte[] pjBits, ref BITMAPINFOHEADER lpbmi, uint iUsage);
 
-    [DllImport("gdi32.dll", SetLastError = true)]
-    internal static extern bool DeleteObject(IntPtr ho);
+    [LibraryImport("gdi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool DeleteObject(IntPtr ho);
 
-    [DllImport("user32.dll")]
-    internal static extern uint GetClipboardSequenceNumber();
+    [LibraryImport("user32.dll")]
+    internal static partial uint GetClipboardSequenceNumber();
 }

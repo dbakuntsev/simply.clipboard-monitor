@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.IO;
 using System.Windows.Media.Imaging;
+using static Simply.ClipboardMonitor.Common.ClipboardFormatConstants;
 
 namespace Simply.ClipboardMonitor.Services.Impl;
 
@@ -11,17 +12,13 @@ namespace Simply.ClipboardMonitor.Services.Impl;
 /// </summary>
 internal sealed class ImagePreviewService : IImagePreviewService
 {
-    // Format IDs that yield HBITMAP data converted to DIB bytes by ClipboardReaderService.
-    // CF_BITMAP (2), CF_DSPBITMAP (0x82) — same set as ClipboardReaderService.HBitmapFormats.
-    private static readonly HashSet<uint> HBitmapFormats = [2, 0x0082];
-
     // ── IImagePreviewService ────────────────────────────────────────────────
 
     /// <inheritdoc/>
     public bool IsImageCompatible(uint formatId, string formatName)
     {
-        // CF_DIB (8), CF_DIBV5 (17), CF_BITMAP (2), CF_DSPBITMAP (0x82)
-        if (formatId is 8 or 17 || HBitmapFormats.Contains(formatId))
+        // CF_DIB, CF_DIBV5, CF_BITMAP, CF_DSPBITMAP
+        if (formatId == CF_DIB || formatId == CF_DIBV5 || HBitmapFormats.Contains(formatId))
             return true;
 
         var normalized = formatName.ToLowerInvariant();
@@ -54,7 +51,7 @@ internal sealed class ImagePreviewService : IImagePreviewService
 
         try
         {
-            if (formatId is 8 or 17 || HBitmapFormats.Contains(formatId))
+            if (formatId == CF_DIB || formatId == CF_DIBV5 || HBitmapFormats.Contains(formatId))
             {
                 // CF_DIB, CF_DIBV5, and HBITMAP-derived formats all yield a
                 // BITMAPINFOHEADER + pixels block.

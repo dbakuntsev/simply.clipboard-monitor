@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Simply.ClipboardMonitor.Services;
 using Simply.ClipboardMonitor.Services.Impl;
+using Simply.ClipboardMonitor.Services.Impl.Strategies;
 using System.Windows;
 
 namespace Simply.ClipboardMonitor;
@@ -35,6 +36,24 @@ public partial class App : Application
 
     private static void RegisterServices(IServiceCollection services)
     {
+        // Handle-read strategies — injected as IEnumerable<IHandleReadStrategy> into ClipboardReaderService.
+        services.AddSingleton<IHandleReadStrategy, NoneHandleReadStrategy>();
+        services.AddSingleton<IHandleReadStrategy, HGlobalHandleReadStrategy>();
+        services.AddSingleton<IHandleReadStrategy, HBitmapHandleReadStrategy>();
+        services.AddSingleton<IHandleReadStrategy, HEnhMetaFileHandleReadStrategy>();
+
+        // Handle-write strategies — injected as IEnumerable<IHandleWriteStrategy> into ClipboardWriterService.
+        services.AddSingleton<IHandleWriteStrategy, HGlobalHandleWriteStrategy>();
+        services.AddSingleton<IHandleWriteStrategy, HBitmapHandleWriteStrategy>();
+        services.AddSingleton<IHandleWriteStrategy, HEnhMetaFileHandleWriteStrategy>();
+
+        // Format exporters — injected as IEnumerable<IFormatExporter> into MainWindow.
+        // Order determines the filter list position in the Save dialog.
+        services.AddSingleton<IFormatExporter, TextFormatExporter>();
+        services.AddSingleton<IFormatExporter, PngFormatExporter>();
+        services.AddSingleton<IFormatExporter, JpegFormatExporter>();
+        services.AddSingleton<IFormatExporter, BinaryFormatExporter>();
+
         // Domain services — all stateless or cheaply shared; registered as singletons.
         services.AddSingleton<IClipboardReader,         ClipboardReaderService>();
         services.AddSingleton<IClipboardWriter,         ClipboardWriterService>();
@@ -42,8 +61,13 @@ public partial class App : Application
         services.AddSingleton<IImagePreviewService,     ImagePreviewService>();
         services.AddSingleton<IFormatClassifier,        FormatClassifierService>();
         services.AddSingleton<IPreferencesService,      PreferencesService>();
-        services.AddSingleton<IHistoryRepository,       HistoryRepository>();
         services.AddSingleton<IClipboardFileRepository, ClipboardFileRepository>();
+
+        // HistoryRepository implements both IHistoryRepository and IHistoryMaintenance;
+        // register the concrete class once and alias both interfaces to the same instance.
+        services.AddSingleton<HistoryRepository>();
+        services.AddSingleton<IHistoryRepository>(sp  => sp.GetRequiredService<HistoryRepository>());
+        services.AddSingleton<IHistoryMaintenance>(sp => sp.GetRequiredService<HistoryRepository>());
 
         // Main window — singleton because only one instance is ever shown.
         services.AddSingleton<MainWindow>();

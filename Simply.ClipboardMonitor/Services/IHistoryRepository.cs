@@ -2,7 +2,12 @@ using Simply.ClipboardMonitor.Models;
 
 namespace Simply.ClipboardMonitor.Services;
 
-/// <summary>Persistence contract for the clipboard change history database.</summary>
+/// <summary>
+/// Read/write persistence contract for the clipboard change history database.
+/// Maintenance operations (size limits, clear) live in the narrower
+/// <see cref="IHistoryMaintenance"/> interface so consumers that only need
+/// session data do not depend on administrative behaviour.
+/// </summary>
 public interface IHistoryRepository
 {
     /// <summary>
@@ -14,23 +19,8 @@ public interface IHistoryRepository
     (long SessionId, bool Trimmed) AddSession(
         IReadOnlyList<FormatSnapshot> snapshots,
         DateTime timestamp,
-        int maxEntries,
+        int  maxEntries,
         long maxDatabaseBytes);
-
-    /// <summary>Returns the history database file size in bytes, or 0 if it does not exist.</summary>
-    long GetDatabaseFileSize();
-
-    /// <summary>
-    /// Applies entry-count and size limits to an existing database, vacuuming if needed.
-    /// Returns true if any sessions were deleted. No-op when the database does not exist.
-    /// </summary>
-    bool EnforceLimits(int maxEntries, long maxDatabaseBytes);
-
-    /// <summary>
-    /// Deletes all sessions, items, and content blobs, then compacts the file with VACUUM.
-    /// Safe to call when the database does not yet exist.
-    /// </summary>
-    void ClearHistory();
 
     /// <summary>
     /// Returns all sessions ordered newest-first (up to <paramref name="maxCount"/>).

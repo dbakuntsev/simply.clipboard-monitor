@@ -50,7 +50,9 @@ public partial class MainWindow : Window
     private readonly IFormatClassifier        _formatClassifier;
     private readonly IPreferencesService      _preferences;
     private readonly IHistoryRepository       _history;
+    private readonly IHistoryMaintenance      _historyMaintenance;
     private readonly IClipboardFileRepository _clipboardFiles;
+    private readonly IReadOnlyList<IFormatExporter> _formatExporters;
 
     private readonly ObservableCollection<ClipboardFormatItem> _formats = [];
     private HwndSource? _hwndSource;
@@ -130,16 +132,20 @@ public partial class MainWindow : Window
         IFormatClassifier        formatClassifier,
         IPreferencesService      preferences,
         IHistoryRepository       history,
-        IClipboardFileRepository clipboardFiles)
+        IHistoryMaintenance      historyMaintenance,
+        IClipboardFileRepository clipboardFiles,
+        IEnumerable<IFormatExporter> formatExporters)
     {
-        _clipboardReader  = clipboardReader;
-        _clipboardWriter  = clipboardWriter;
-        _textDecoding     = textDecoding;
-        _imagePreviews    = imagePreviews;
-        _formatClassifier = formatClassifier;
-        _preferences      = preferences;
-        _history          = history;
-        _clipboardFiles   = clipboardFiles;
+        _clipboardReader    = clipboardReader;
+        _clipboardWriter    = clipboardWriter;
+        _textDecoding       = textDecoding;
+        _imagePreviews      = imagePreviews;
+        _formatClassifier   = formatClassifier;
+        _preferences        = preferences;
+        _history            = history;
+        _historyMaintenance = historyMaintenance;
+        _clipboardFiles     = clipboardFiles;
+        _formatExporters    = formatExporters.ToList().AsReadOnly();
 
         // Required for legacy OEM/ANSI code pages (e.g. CP437 used by CF_OEMTEXT) which
         // are not included in the default .NET encoding set.
@@ -707,7 +713,7 @@ public partial class MainWindow : Window
     {
         if (_isMonitoring && _isTrackingHistory)
         {
-            var size = _history.GetDatabaseFileSize();
+            var size = _historyMaintenance.GetDatabaseFileSize();
             StatusText.Text = $"Monitoring... · Tracking history ({FormatFileSize(size)} storage size)...";
         }
         else
@@ -817,7 +823,7 @@ public partial class MainWindow : Window
 
     private void MenuItemSettings_Click(object sender, RoutedEventArgs e)
     {
-        var dlg = new SettingsDialog(_historyMaxEntries, _historyMaxSizeMb, _history) { Owner = this };
+        var dlg = new SettingsDialog(_historyMaxEntries, _historyMaxSizeMb, _historyMaintenance) { Owner = this };
         var result = dlg.ShowDialog();
 
         if (dlg.HistoryWasCleared)
@@ -845,7 +851,7 @@ public partial class MainWindow : Window
                 var trackingHistory = _isTrackingHistory;
                 _historyChannel.Writer.TryWrite(() =>
                 {
-                    var removed = _history.EnforceLimits(maxEntries, maxBytes);
+                    var removed = _historyMaintenance.EnforceLimits(maxEntries, maxBytes);
                     if (removed || trackingHistory)
                     {
                         Dispatcher.InvokeAsync(() =>
@@ -944,45 +950,43 @@ public partial class MainWindow : Window
         if (_currentFormatBytes is not { Length: > 0 })
             return;
 
-        bool textAvailable  = _currentAutoDetectedEncoding != null;
-        bool imageAvailable = ImagePreview.Source is BitmapSource;
+        Encoding? manuallySelected = _textEncodingManuallyChanged
+            && ContentTabControl.SelectedItem == TextTabItem
+            && TextEncodingComboBox.SelectedItem is EncodingItem { Encoding: var enc }
+            ? enc : null;
 
-        var filters = new List<(string FilterPart, string Ext)>();
-        if (textAvailable)
-            filters.Add(("Text (*.txt)|*.txt", ".txt"));
-        if (imageAvailable)
-        {
-            filters.Add(("PNG Image (*.png)|*.png", ".png"));
-            filters.Add(("JPEG Image (*.jpg)|*.jpg", ".jpg"));
-        }
-        filters.Add(("Binary Data (*.bin)|*.bin", ".bin"));
+        var ctx = new FormatExportContext(
+            Bytes:                    _currentFormatBytes,
+            FormatId:                 _currentFormatId,
+            FormatName:               _currentFormatName,
+            AutoDetectedEncoding:     _currentAutoDetectedEncoding,
+            ManuallySelectedEncoding: manuallySelected,
+            ImagePreviewSource:       ImagePreview.Source as BitmapSource);
 
-        int defaultFilter;
-        if (textAvailable)
+        var applicable = _formatExporters.Where(exp => exp.CanExport(ctx)).ToList();
+        if (applicable.Count == 0)
+            return;
+
+        // Default: text > jpeg/png (by format name hint) > binary
+        int defaultIndex = applicable.FindIndex(exp => exp.Extension == ".txt");
+        if (defaultIndex < 0)
         {
-            defaultFilter = filters.FindIndex(f => f.Ext == ".txt") + 1;
+            var norm          = _currentFormatName.ToLowerInvariant();
+            var preferredExt  = norm.Contains("jpeg") || norm.Contains("jpg") ? ".jpg" : ".png";
+            defaultIndex      = applicable.FindIndex(exp => exp.Extension == preferredExt);
         }
-        else if (imageAvailable)
-        {
-            var norm = _currentFormatName.ToLowerInvariant();
-            defaultFilter = (norm.Contains("jpeg") || norm.Contains("jpg"))
-                ? filters.FindIndex(f => f.Ext == ".jpg") + 1
-                : filters.FindIndex(f => f.Ext == ".png") + 1;
-        }
-        else
-        {
-            defaultFilter = filters.FindIndex(f => f.Ext == ".bin") + 1;
-        }
+        if (defaultIndex < 0)
+            defaultIndex = applicable.Count - 1;  // fallback to last (binary)
 
         var selectedClipboardItem = FormatListBox.SelectedItem as ClipboardFormatItem;
-        string fileName = $"clipboard-{new string((selectedClipboardItem?.Name ?? "CF_UNKNOWN").Select(ch => Path.GetInvalidFileNameChars().Contains(ch) ? '_' : ch).ToArray())}-{DateTime.Now:yyyyMMddTHHmmss}";
+        var fileName = $"clipboard-{new string((selectedClipboardItem?.Name ?? "CF_UNKNOWN").Select(ch => Path.GetInvalidFileNameChars().Contains(ch) ? '_' : ch).ToArray())}-{DateTime.Now:yyyyMMddTHHmmss}";
 
         var dlg = new SaveFileDialog
         {
             Title           = $"Export Selected Clipboard Format: {selectedClipboardItem?.Name ?? "CF_UNKNOWN"}",
-            Filter          = string.Join("|", filters.Select(f => f.FilterPart)),
-            FilterIndex     = defaultFilter,
-            DefaultExt      = filters[defaultFilter - 1].Ext.TrimStart('.'),
+            Filter          = string.Join("|", applicable.Select(exp => exp.FilterLabel)),
+            FilterIndex     = defaultIndex + 1,
+            DefaultExt      = applicable[defaultIndex].Extension.TrimStart('.'),
             FileName        = fileName,
             OverwritePrompt = true,
         };
@@ -990,63 +994,14 @@ public partial class MainWindow : Window
         if (dlg.ShowDialog(this) != true)
             return;
 
-        var selectedExt = filters[dlg.FilterIndex - 1].Ext;
         try
         {
-            switch (selectedExt)
-            {
-                case ".txt": ExportAsText(dlg.FileName);  break;
-                case ".png": ExportAsPng(dlg.FileName);   break;
-                case ".jpg": ExportAsJpeg(dlg.FileName);  break;
-                case ".bin": File.WriteAllBytes(dlg.FileName, _currentFormatBytes); break;
-            }
+            applicable[dlg.FilterIndex - 1].Export(dlg.FileName, ctx);
         }
         catch (Exception ex)
         {
             MessageBox.Show(this, $"Failed to export:\n\n{ex.Message}",
                 "Export Failed", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    private void ExportAsText(string path)
-    {
-        Encoding encoding;
-        if (ContentTabControl.SelectedItem == TextTabItem
-            && _textEncodingManuallyChanged
-            && TextEncodingComboBox.SelectedItem is EncodingItem { Encoding: var manualEncoding })
-        {
-            encoding = manualEncoding;
-        }
-        else
-        {
-            encoding = _currentAutoDetectedEncoding!;
-        }
-
-        var text = encoding.GetString(_currentTextBytes!).TrimEnd('\0');
-        File.WriteAllText(path, text, encoding);
-    }
-
-    private void ExportAsPng(string path)
-    {
-        var encoder = new PngBitmapEncoder();
-        encoder.Frames.Add(BitmapFrame.Create((BitmapSource)ImagePreview.Source!));
-        using var fs = File.Create(path);
-        encoder.Save(fs);
-    }
-
-    private void ExportAsJpeg(string path)
-    {
-        var norm = _currentFormatName.ToLowerInvariant();
-        if (norm.Contains("jpeg") || norm.Contains("jpg"))
-        {
-            File.WriteAllBytes(path, _currentFormatBytes!);
-        }
-        else
-        {
-            var encoder = new JpegBitmapEncoder { QualityLevel = 80 };
-            encoder.Frames.Add(BitmapFrame.Create((BitmapSource)ImagePreview.Source!));
-            using var fs = File.Create(path);
-            encoder.Save(fs);
         }
     }
 
@@ -1499,32 +1454,9 @@ public partial class MainWindow : Window
         var timestamp   = DateTime.Now;
         var formatItems = _formats.ToList();  // snapshot on UI thread
 
-        if (!_clipboardReader.TryOpenClipboard(IntPtr.Zero))
+        var snapshots = _clipboardReader.CaptureAllFormats(formatItems);
+        if (snapshots.Count == 0)
             return;
-
-        var snapshots = new List<FormatSnapshot>(formatItems.Count);
-        try
-        {
-            foreach (var item in formatItems)
-            {
-                var handleType = _clipboardReader.GetHandleType(item.FormatId);
-                byte[]? data   = null;
-                if (handleType != "none")
-                    _clipboardReader.TryReadFormatBytes(item.FormatId, handleType, out data, out _);
-
-                // Prefer the actual byte length; fall back to the size already measured
-                // by RefreshFormats for formats whose data could not be read as a byte[].
-                var originalSize = data?.LongLength
-                    ?? (item.ContentSizeValue >= 0 ? item.ContentSizeValue : 0L);
-
-                snapshots.Add(new FormatSnapshot(item.Ordinal, item.FormatId, item.Name,
-                                                 handleType, data, originalSize));
-            }
-        }
-        finally
-        {
-            _clipboardReader.CloseClipboard();
-        }
 
         // If the sequence number advanced since WM_CLIPBOARDUPDATE arrived, a
         // delayed-rendering provider rendered data and posted a fresh
@@ -1550,34 +1482,10 @@ public partial class MainWindow : Window
             return;
         }
 
-        var formatItems = _formats.ToList();
-
-        if (!_clipboardReader.TryOpenClipboard(IntPtr.Zero))
-            return;
-
-        var snapshot = new Dictionary<string, FormatSnapshot>(StringComparer.Ordinal);
-        try
-        {
-            foreach (var item in formatItems)
-            {
-                var handleType = _clipboardReader.GetHandleType(item.FormatId);
-                byte[]? data   = null;
-                if (handleType != "none")
-                    _clipboardReader.TryReadFormatBytes(item.FormatId, handleType, out data, out _);
-
-                var originalSize = data?.LongLength
-                    ?? (item.ContentSizeValue >= 0 ? item.ContentSizeValue : 0L);
-
-                snapshot[item.Name] = new FormatSnapshot(item.Ordinal, item.FormatId, item.Name,
-                                                         handleType, data, originalSize);
-            }
-        }
-        finally
-        {
-            _clipboardReader.CloseClipboard();
-        }
-
-        _staticSnapshot = snapshot;
+        var snapshots = _clipboardReader.CaptureAllFormats(_formats.ToList());
+        _staticSnapshot = snapshots.Count == 0
+            ? null
+            : snapshots.ToDictionary(s => s.FormatName, StringComparer.Ordinal);
     }
 
     /// <summary>

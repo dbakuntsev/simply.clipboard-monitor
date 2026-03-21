@@ -11,6 +11,14 @@ public interface IClipboardReader
     IReadOnlyList<ClipboardFormatItem> EnumerateFormats();
 
     /// <summary>
+    /// Opens the clipboard, reads raw bytes for every format in <paramref name="formats"/>,
+    /// then closes the clipboard.  Returns an empty list if the clipboard cannot be opened.
+    /// Each <see cref="FormatSnapshot"/> carries the handle type, the raw bytes (null for
+    /// "none"-type handles), and the original byte size.
+    /// </summary>
+    IReadOnlyList<FormatSnapshot> CaptureAllFormats(IReadOnlyList<ClipboardFormatItem> formats);
+
+    /// <summary>
     /// Reads the raw bytes for a single format.
     /// Returns false (with a non-null <paramref name="failureMessage"/>) when the data
     /// cannot be read; <paramref name="data"/> may still be null for "none" handle types.

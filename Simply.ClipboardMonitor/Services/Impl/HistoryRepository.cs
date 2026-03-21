@@ -13,7 +13,7 @@ namespace Simply.ClipboardMonitor.Services.Impl;
 /// Blob data is stored compressed (ZStandard, max level) and deduplicated by SHA-256
 /// hash so that identical payloads across different sessions are stored only once.
 /// </summary>
-internal sealed class HistoryRepository : IHistoryRepository
+internal sealed class HistoryRepository : IHistoryRepository, IHistoryMaintenance
 {
     private const int ZstdMaxLevel = 22;
 

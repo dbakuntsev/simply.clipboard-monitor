@@ -5,7 +5,7 @@ namespace Simply.ClipboardMonitor;
 
 public partial class SettingsDialog : Window
 {
-    private readonly IHistoryRepository _history;
+    private readonly IHistoryMaintenance _history;
 
     /// <summary>Validated maximum entry count; meaningful only when DialogResult is true.</summary>
     public int MaxEntries { get; private set; }
@@ -16,7 +16,7 @@ public partial class SettingsDialog : Window
     /// <summary>True if the user pressed "Clear History" at any point during this dialog session.</summary>
     public bool HistoryWasCleared { get; private set; }
 
-    internal SettingsDialog(int maxEntries, int maxSizeMb, IHistoryRepository history)
+    internal SettingsDialog(int maxEntries, int maxSizeMb, IHistoryMaintenance history)
     {
         _history = history;
         InitializeComponent();

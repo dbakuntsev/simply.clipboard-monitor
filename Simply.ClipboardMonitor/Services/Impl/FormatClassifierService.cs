@@ -1,6 +1,7 @@
 using Simply.ClipboardMonitor.Models;
 using System.Text;
 using System.Windows.Media;
+using static Simply.ClipboardMonitor.Common.ClipboardFormatConstants;
 
 namespace Simply.ClipboardMonitor.Services.Impl;
 
@@ -71,8 +72,8 @@ internal sealed class FormatClassifierService : IFormatClassifier
 
     private static bool IsImageFormat(uint id, string name)
     {
-        // CF_BITMAP (2), CF_DIB (8), CF_DIBV5 (17), CF_DSPBITMAP (0x82)
-        if (id is 2 or 8 or 17 or 0x0082) return true;
+        // HBitmapFormats covers CF_BITMAP / CF_DSPBITMAP; DIB formats are CF_DIB and CF_DIBV5.
+        if (HBitmapFormats.Contains(id) || id == CF_DIB || id == CF_DIBV5) return true;
         var n = name.ToLowerInvariant();
         return n.Contains("png")    || n.Contains("jpeg") || n.Contains("jpg") ||
                n.Contains("dib")    || n.Contains("bitmap") || n.Contains("image");
@@ -87,12 +88,12 @@ internal sealed class FormatClassifierService : IFormatClassifier
 
     private static bool IsTextFormat(uint id, string name)
     {
-        // CF_TEXT (1), CF_OEMTEXT (7), CF_UNICODETEXT (13)
-        if (id is 1 or 7 or 13) return true;
+        // CF_TEXT, CF_OEMTEXT, CF_UNICODETEXT
+        if (id == CF_TEXT || id == CF_OEMTEXT || id == CF_UNICODETEXT) return true;
         // Name-based: "text"-like, but not HTML or RTF (those have their own pills).
         return name.Contains("text", StringComparison.OrdinalIgnoreCase) &&
                !IsHtmlFormat(name) && !IsRtfFormat(name);
     }
 
-    private static bool IsFileFormat(uint id) => id == 15; // CF_HDROP
+    private static bool IsFileFormat(uint id) => id == CF_HDROP;
 }

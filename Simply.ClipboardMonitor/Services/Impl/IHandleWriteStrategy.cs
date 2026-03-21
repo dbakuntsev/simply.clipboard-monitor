@@ -1,4 +1,4 @@
-namespace Simply.ClipboardMonitor.Services;
+namespace Simply.ClipboardMonitor.Services.Impl;
 
 /// <summary>
 /// Restores a single clipboard format using a specific handle type.

@@ -1,4 +1,4 @@
-namespace Simply.ClipboardMonitor.Services;
+namespace Simply.ClipboardMonitor.Services.Impl;
 
 /// <summary>
 /// Reads raw bytes from a clipboard handle of a specific type.

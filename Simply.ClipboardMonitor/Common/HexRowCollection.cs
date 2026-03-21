@@ -57,10 +57,3 @@ internal sealed class HexRowCollection(byte[] data) : IReadOnlyList<HexRow>
 
     IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 }
-
-internal sealed class HexRow(string offset, string hex, string ascii)
-{
-    public string Offset { get; } = offset;
-    public string Hex    { get; } = hex;
-    public string Ascii  { get; } = ascii;
-}

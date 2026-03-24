@@ -139,6 +139,26 @@ The Settings dialog also shows the current database file size and provides a **C
 
 When history tracking is active, the status bar shows "Tracking history (X.X MB storage size)...".
 
+## System Tray
+
+The application can be kept running in the system tray instead of closing when the main window is dismissed.
+
+### Enabling Minimize to System Tray
+
+Open **File → Settings** and check **Minimize to System Tray**. When the setting is ON:
+
+- The system tray icon is visible at all times while the application is running.
+- Closing the main window hides it rather than exiting. The first time the window is hidden this way, a balloon notification appears to confirm the application is still running.
+- Left-clicking the tray icon toggles the window between visible and hidden.
+- Right-clicking the tray icon opens a context menu with two entries:
+  - **Show/Hide Window** — toggles window visibility.
+  - **Exit** — closes the application immediately without hiding to the tray.
+- **File → Exit** always exits the application, regardless of the setting.
+
+### Persisted preference
+
+The **Minimize to System Tray** setting is saved in `%LOCALAPPDATA%\Simply.ClipboardMonitor\preferences.json` along with a flag that tracks whether the first-minimize balloon notification has been shown (so it appears only once ever).
+
 ## Preview Behavior
 
 ### Hex
@@ -195,10 +215,11 @@ A **Save As** dialog opens with the file name pre-set to `clipboard-{format_name
 - C#
 - WPF
 - .NET 8 (`net8.0-windows`)
-- Win32 APIs via P/Invoke (`user32.dll`, `kernel32.dll`, `gdi32.dll`)
+- Win32 APIs via P/Invoke (`user32.dll`, `kernel32.dll`, `gdi32.dll`, `shell32.dll`)
 - SQLite via `Microsoft.Data.Sqlite` (clipboard database persistence and history)
 - ZStandard via `ZstdSharp.Port` (history blob compression)
 - `Microsoft.Extensions.DependencyInjection` (constructor injection throughout)
+- `System.Drawing.Common` (system tray icon loading)
 
 ## Project Structure
 
@@ -207,7 +228,7 @@ A **Save As** dialog opens with the file name pre-set to `clipboard-{format_name
 - `Simply.ClipboardMonitor/App.xaml` / `App.xaml.cs` — WPF application entry point; builds the DI container and registers all services, strategies, and exporters
 - `Simply.ClipboardMonitor/Views/MainWindow.xaml` / `MainWindow.xaml.cs` — main window (clipboard listener, format list, previews, history, export, sort, preferences)
 - `Simply.ClipboardMonitor/Views/AboutDialog.xaml` / `AboutDialog.xaml.cs` — About dialog
-- `Simply.ClipboardMonitor/Views/SettingsDialog.xaml` / `SettingsDialog.xaml.cs` — Settings dialog (history limits, database size display, clear history)
+- `Simply.ClipboardMonitor/Views/SettingsDialog.xaml` / `SettingsDialog.xaml.cs` — Settings dialog (history limits, database size display, clear history, minimize-to-tray toggle)
 
 ### Models
 Data-transfer records and plain model classes with no service dependencies.
@@ -221,7 +242,7 @@ Data-transfer records and plain model classes with no service dependencies.
 - `Models/SavedClipboardFormat.cs` — format row stored in / loaded from a `.clipdb` file
 - `Models/SessionEntry.cs` — one row from the history sessions table
 - `Models/TextDecodeResult.cs` — result of a single text-decode attempt (text, encoding, success/failure)
-- `Models/UserPreferences.cs` — top-level user preferences (sort property/direction, monitor/history settings, limits)
+- `Models/UserPreferences.cs` — top-level user preferences (sort property/direction, monitor/history settings, limits, minimize-to-tray toggle, balloon-shown flag)
 
 ### Services
 Public domain service interfaces consumed by the main window and DI wiring.
@@ -272,7 +293,7 @@ Internal utility types with no domain logic.
 - `Common/ClipboardFormatConstants.cs` — Windows clipboard format ID constants (`CF_TEXT`, `CF_BITMAP`, etc.) and handle-type classification sets
 - `Common/HexRow.cs` — single hex-dump display row (offset, hex bytes, ASCII)
 - `Common/HexRowCollection.cs` — lazy-loaded, cached `IReadOnlyList<HexRow>` over a raw byte array
-- `Common/NativeMethods.cs` — Win32 P/Invoke declarations (`user32.dll`, `kernel32.dll`, `gdi32.dll`)
+- `Common/NativeMethods.cs` — Win32 P/Invoke declarations (`user32.dll`, `kernel32.dll`, `gdi32.dll`, `shell32.dll`)
 - `Common/ShellHelper.cs` — opens a URL in the default browser via `ShellExecute`
 - `Common/Win32Structs.cs` — Win32 GDI structs used by clipboard read/write (`BITMAP`, `BITMAPINFOHEADER`)
 

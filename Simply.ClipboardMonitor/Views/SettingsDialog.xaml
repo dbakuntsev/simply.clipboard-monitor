@@ -54,6 +54,16 @@
                     Click="ClearHistoryButton_Click" />
         </Grid>
 
+        <Separator Margin="0,16,0,0" />
+
+        <TextBlock Text="Application"
+                   FontWeight="SemiBold"
+                   Margin="0,16,0,12" />
+
+        <CheckBox x:Name="MinimizeToTrayCheckBox"
+                  Content="Minimize to System Tray"
+                  Margin="0,0,0,0" />
+
         <StackPanel Orientation="Horizontal"
                     HorizontalAlignment="Right"
                     Margin="0,20,0,0">

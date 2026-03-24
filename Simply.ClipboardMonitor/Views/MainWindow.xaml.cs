@@ -17,6 +17,7 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Runtime.InteropServices;
 using System.Windows.Threading;
 
 namespace Simply.ClipboardMonitor;
@@ -70,6 +71,14 @@ public partial class MainWindow : Window
     private double _panStartVerticalOffset;
     // Tracks the path of the most recently loaded or saved .clipdb file.
     private string? _currentFilePath;
+
+    // System tray state
+    private const int WM_TRAYICON = 0x8001; // WM_APP + 1
+    private System.Drawing.Icon? _trayIcon;
+    private bool   _trayIconAdded;
+    private bool   _minimizeToSystemTray;
+    private bool   _trayBalloonShown;
+    private bool   _isExiting;
 
     // Text-preview encoding state
     private byte[]?                      _currentTextBytes;
@@ -185,6 +194,9 @@ public partial class MainWindow : Window
             NativeMethods.AddClipboardFormatListener(source.Handle);
         }
 
+        if (_minimizeToSystemTray)
+            InitializeTrayIcon();
+
         RefreshFormats();
 
         if (!_isMonitoring)
@@ -194,8 +206,23 @@ public partial class MainWindow : Window
             LoadHistoryFromDatabase();
     }
 
+    protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+    {
+        if (_minimizeToSystemTray && !_isExiting)
+        {
+            e.Cancel = true;
+            Hide();
+            ShowTrayBalloonIfNeeded();
+            return;
+        }
+
+        base.OnClosing(e);
+    }
+
     protected override void OnClosed(EventArgs e)
     {
+        DisposeTrayIcon();
+
         if (_hwndSource != null)
         {
             NativeMethods.RemoveClipboardFormatListener(_hwndSource.Handle);
@@ -206,6 +233,140 @@ public partial class MainWindow : Window
         _historyChannel.Writer.TryComplete();
         SavePreferences();
         base.OnClosed(e);
+    }
+
+    // ── System tray ─────────────────────────────────────────────────────────
+
+    private unsafe void InitializeTrayIcon()
+    {
+        if (_trayIconAdded || _hwndSource == null)
+            return;
+
+        using (var stream = this.GetType().Assembly.GetManifestResourceStream(this.GetType().Namespace + ".Resources.icon.ico"))
+        {
+            if (stream != null)
+                _trayIcon = new System.Drawing.Icon(stream);
+        }
+
+        var nid = new NativeMethods.NOTIFYICONDATA
+        {
+            cbSize           = (uint)sizeof(NativeMethods.NOTIFYICONDATA),
+            hWnd             = _hwndSource.Handle,
+            uID              = 1,
+            uFlags           = NativeMethods.NIF_MESSAGE | NativeMethods.NIF_ICON | NativeMethods.NIF_TIP,
+            uCallbackMessage = (uint)WM_TRAYICON,
+            hIcon            = (_trayIcon ?? System.Drawing.SystemIcons.Application).Handle,
+        };
+        CopyToFixed(nid.szTip, 128, "Simply.ClipboardMonitor");
+        NativeMethods.Shell_NotifyIcon(NativeMethods.NIM_ADD, ref nid);
+        _trayIconAdded = true;
+    }
+
+    private unsafe void DisposeTrayIcon()
+    {
+        if (!_trayIconAdded || _hwndSource == null)
+            return;
+
+        var nid = new NativeMethods.NOTIFYICONDATA
+        {
+            cbSize = (uint)sizeof(NativeMethods.NOTIFYICONDATA),
+            hWnd   = _hwndSource.Handle,
+            uID    = 1,
+        };
+        NativeMethods.Shell_NotifyIcon(NativeMethods.NIM_DELETE, ref nid);
+        _trayIconAdded  = false;
+        _trayIcon?.Dispose();
+        _trayIcon = null;
+    }
+
+    private unsafe void ShowTrayContextMenu()
+    {
+        if (_hwndSource == null)
+            return;
+
+        var hMenu = NativeMethods.CreatePopupMenu();
+        if (hMenu == IntPtr.Zero)
+            return;
+
+        try
+        {
+            NativeMethods.AppendMenu(hMenu, NativeMethods.MF_STRING,    new UIntPtr(1), "Show/Hide Window");
+            NativeMethods.AppendMenu(hMenu, NativeMethods.MF_SEPARATOR, UIntPtr.Zero,   null);
+            NativeMethods.AppendMenu(hMenu, NativeMethods.MF_STRING,    new UIntPtr(2), "Exit");
+
+            NativeMethods.GetCursorPos(out var pt);
+
+            // Required so the menu dismisses when the user clicks elsewhere.
+            NativeMethods.SetForegroundWindow(_hwndSource.Handle);
+
+            const uint TPM_RETURNCMD   = 0x0100;
+            const uint TPM_RIGHTBUTTON = 0x0002;
+            var cmd = NativeMethods.TrackPopupMenuEx(
+                hMenu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
+                pt.x, pt.y, _hwndSource.Handle, IntPtr.Zero);
+
+            // Post a benign message so the SetForegroundWindow trick works correctly.
+            NativeMethods.PostMessage(_hwndSource.Handle, 0 /* WM_NULL */, IntPtr.Zero, IntPtr.Zero);
+
+            switch (cmd)
+            {
+                case 1: ToggleTrayWindowVisibility(); break;
+                case 2: ExitApplication();            break;
+            }
+        }
+        finally
+        {
+            NativeMethods.DestroyMenu(hMenu);
+        }
+    }
+
+    private void ToggleTrayWindowVisibility()
+    {
+        if (IsVisible)
+        {
+            Hide();
+        }
+        else
+        {
+            Show();
+            WindowState = WindowState.Normal;
+            Activate();
+        }
+    }
+
+    private unsafe void ShowTrayBalloonIfNeeded()
+    {
+        if (_trayBalloonShown || !_trayIconAdded || _hwndSource == null)
+            return;
+
+        _trayBalloonShown = true;
+        SavePreferences();
+
+        var nid = new NativeMethods.NOTIFYICONDATA
+        {
+            cbSize      = (uint)sizeof(NativeMethods.NOTIFYICONDATA),
+            hWnd        = _hwndSource.Handle,
+            uID         = 1,
+            uFlags      = NativeMethods.NIF_INFO,
+            dwInfoFlags = NativeMethods.NIIF_INFO,
+        };
+        CopyToFixed(nid.szInfoTitle, 64,  "Simply.ClipboardMonitor");
+        CopyToFixed(nid.szInfo,      256, "The application is still running in the system tray.");
+        NativeMethods.Shell_NotifyIcon(NativeMethods.NIM_MODIFY, ref nid);
+    }
+
+    private void ExitApplication()
+    {
+        _isExiting = true;
+        DisposeTrayIcon();
+        Close();
+    }
+
+    private static unsafe void CopyToFixed(char* dest, int maxChars, string value)
+    {
+        int len = Math.Min(value.Length, maxChars - 1);
+        value.AsSpan(0, len).CopyTo(new Span<char>(dest, len));
+        dest[len] = '\0';
     }
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -223,6 +384,22 @@ public partial class MainWindow : Window
                     CaptureHistorySession(seqAtArrival);
             }
             handled = true;
+        }
+        else if (msg == WM_TRAYICON)
+        {
+            const int WM_LBUTTONUP = 0x0202;
+            const int WM_RBUTTONUP = 0x0205;
+            var notification = (int)(lParam.ToInt64() & 0xFFFF);
+            if (notification == WM_LBUTTONUP)
+            {
+                ToggleTrayWindowVisibility();
+                handled = true;
+            }
+            else if (notification == WM_RBUTTONUP)
+            {
+                ShowTrayContextMenu();
+                handled = true;
+            }
         }
 
         return IntPtr.Zero;
@@ -769,7 +946,7 @@ public partial class MainWindow : Window
 
     private void MenuItemExit_Click(object sender, RoutedEventArgs e)
     {
-        Close();
+        ExitApplication();
     }
 
     private void ClipboardMenu_SubmenuOpened(object sender, RoutedEventArgs e)
@@ -823,7 +1000,7 @@ public partial class MainWindow : Window
 
     private void MenuItemSettings_Click(object sender, RoutedEventArgs e)
     {
-        var dlg = new SettingsDialog(_historyMaxEntries, _historyMaxSizeMb, _historyMaintenance) { Owner = this };
+        var dlg = new SettingsDialog(_historyMaxEntries, _historyMaxSizeMb, _historyMaintenance, _minimizeToSystemTray) { Owner = this };
         var result = dlg.ShowDialog();
 
         if (dlg.HistoryWasCleared)
@@ -840,6 +1017,16 @@ public partial class MainWindow : Window
         {
             _historyMaxEntries = dlg.MaxEntries;
             _historyMaxSizeMb  = dlg.MaxSizeMb;
+
+            if (dlg.MinimizeToSystemTray != _minimizeToSystemTray)
+            {
+                _minimizeToSystemTray = dlg.MinimizeToSystemTray;
+                if (_minimizeToSystemTray)
+                    InitializeTrayIcon();
+                else
+                    DisposeTrayIcon();
+            }
+
             SavePreferences();
 
             // Enforce new limits against any existing database, regardless of whether
@@ -1213,10 +1400,12 @@ public partial class MainWindow : Window
                 }
             }
 
-            _isMonitoring      = preferences.MonitorChanges;
-            _isTrackingHistory = preferences.TrackHistory && _isMonitoring;
-            _historyMaxEntries = preferences.HistoryMaxEntries > 0 ? preferences.HistoryMaxEntries : DefaultHistoryMaxEntries;
-            _historyMaxSizeMb  = preferences.HistoryMaxSizeMb  > 0 ? preferences.HistoryMaxSizeMb  : DefaultHistoryMaxSizeMb;
+            _isMonitoring         = preferences.MonitorChanges;
+            _isTrackingHistory    = preferences.TrackHistory && _isMonitoring;
+            _historyMaxEntries    = preferences.HistoryMaxEntries > 0 ? preferences.HistoryMaxEntries : DefaultHistoryMaxEntries;
+            _historyMaxSizeMb     = preferences.HistoryMaxSizeMb  > 0 ? preferences.HistoryMaxSizeMb  : DefaultHistoryMaxSizeMb;
+            _minimizeToSystemTray = preferences.MinimizeToSystemTray;
+            _trayBalloonShown     = preferences.TrayBalloonShown;
         }
         catch
         {
@@ -1234,13 +1423,15 @@ public partial class MainWindow : Window
     {
         var preferences = new UserPreferences
         {
-            SortProperty      = _currentSortProperty,
-            SortDirection     = _currentSortDirection.ToString(),
-            FormatColumns     = CaptureFormatColumnPreferences(),
-            MonitorChanges    = _isMonitoring,
-            TrackHistory      = _isTrackingHistory,
-            HistoryMaxEntries = _historyMaxEntries,
-            HistoryMaxSizeMb  = _historyMaxSizeMb,
+            SortProperty         = _currentSortProperty,
+            SortDirection        = _currentSortDirection.ToString(),
+            FormatColumns        = CaptureFormatColumnPreferences(),
+            MonitorChanges       = _isMonitoring,
+            TrackHistory         = _isTrackingHistory,
+            HistoryMaxEntries    = _historyMaxEntries,
+            HistoryMaxSizeMb     = _historyMaxSizeMb,
+            MinimizeToSystemTray = _minimizeToSystemTray,
+            TrayBalloonShown     = _trayBalloonShown,
         };
 
         _preferences.Save(preferences);

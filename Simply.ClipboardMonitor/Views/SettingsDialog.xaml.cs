@@ -16,12 +16,16 @@ public partial class SettingsDialog : Window
     /// <summary>True if the user pressed "Clear History" at any point during this dialog session.</summary>
     public bool HistoryWasCleared { get; private set; }
 
-    internal SettingsDialog(int maxEntries, int maxSizeMb, IHistoryMaintenance history)
+    /// <summary>Whether "Minimize to System Tray" was checked when OK was pressed.</summary>
+    public bool MinimizeToSystemTray { get; private set; }
+
+    internal SettingsDialog(int maxEntries, int maxSizeMb, IHistoryMaintenance history, bool minimizeToSystemTray)
     {
         _history = history;
         InitializeComponent();
-        MaxEntriesBox.Text = maxEntries.ToString();
-        MaxSizeMbBox.Text  = maxSizeMb.ToString();
+        MaxEntriesBox.Text               = maxEntries.ToString();
+        MaxSizeMbBox.Text                = maxSizeMb.ToString();
+        MinimizeToTrayCheckBox.IsChecked = minimizeToSystemTray;
         RefreshDbSizeDisplay();
     }
 
@@ -59,9 +63,10 @@ public partial class SettingsDialog : Window
             return;
         }
 
-        MaxEntries   = entries;
-        MaxSizeMb    = sizeMb;
-        DialogResult = true;
+        MaxEntries           = entries;
+        MaxSizeMb            = sizeMb;
+        MinimizeToSystemTray = MinimizeToTrayCheckBox.IsChecked == true;
+        DialogResult         = true;
     }
 
     private void CancelButton_Click(object sender, RoutedEventArgs e)

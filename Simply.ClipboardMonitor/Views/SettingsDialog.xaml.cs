@@ -1,3 +1,4 @@
+using Simply.ClipboardMonitor.Common;
 using Simply.ClipboardMonitor.Services;
 using System.Windows;
 
@@ -31,7 +32,7 @@ public partial class SettingsDialog : Window
 
     private void RefreshDbSizeDisplay()
     {
-        DbSizeTextBlock.Text = FormatFileSize(_history.GetDatabaseFileSize());
+        DbSizeTextBlock.Text = DisplayHelper.FormatFileSize(_history.GetDatabaseFileSize());
     }
 
     private void ClearHistoryButton_Click(object sender, RoutedEventArgs e)
@@ -74,12 +75,4 @@ public partial class SettingsDialog : Window
         DialogResult = false;
     }
 
-    private static string FormatFileSize(long bytes) => bytes switch
-    {
-        0                      => "Not created yet",
-        >= 1024L * 1024 * 1024 => $"{bytes / (1024.0 * 1024 * 1024):F1} GB",
-        >= 1024L * 1024        => $"{bytes / (1024.0 * 1024):F1} MB",
-        >= 1024L               => $"{bytes / 1024.0:F1} KB",
-        _                      => $"{bytes} B",
-    };
 }

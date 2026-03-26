@@ -15,21 +15,8 @@ internal sealed class ImagePreviewService : IImagePreviewService
     // ── IImagePreviewService ────────────────────────────────────────────────
 
     /// <inheritdoc/>
-    public bool IsImageCompatible(uint formatId, string formatName)
-    {
-        // CF_DIB, CF_DIBV5, CF_BITMAP, CF_DSPBITMAP
-        if (formatId == CF_DIB || formatId == CF_DIBV5 || HBitmapFormats.Contains(formatId))
-            return true;
-
-        var normalized = formatName.ToLowerInvariant();
-        return normalized.Contains("png",    StringComparison.Ordinal) ||
-               normalized.Contains("jpeg",   StringComparison.Ordinal) ||
-               normalized.Contains("jpg",    StringComparison.Ordinal) ||
-               normalized.Contains("gif",    StringComparison.Ordinal) ||
-               normalized.Contains("dib",    StringComparison.Ordinal) ||
-               normalized.Contains("bitmap", StringComparison.Ordinal) ||
-               normalized.Contains("image",  StringComparison.Ordinal);
-    }
+    public bool IsImageCompatible(uint formatId, string formatName) =>
+        IsImageFormat(formatId, formatName);
 
     /// <inheritdoc/>
     public bool TryCreatePreview(uint formatId, string formatName, byte[] data,

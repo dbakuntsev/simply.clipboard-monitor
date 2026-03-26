@@ -1,6 +1,7 @@
 using Simply.ClipboardMonitor.Common;
 using Simply.ClipboardMonitor.Models;
 using System.Text;
+using static Simply.ClipboardMonitor.Common.ClipboardFormatConstants;
 
 namespace Simply.ClipboardMonitor.Services.Impl;
 
@@ -25,7 +26,7 @@ internal sealed class TextDecodingService : ITextDecodingService
     public bool IsTextCompatible(uint formatId, string formatName)
     {
         var normalized = formatName.ToLowerInvariant();
-        return formatId is 1 or 7 or 13 ||
+        return formatId is CF_TEXT or CF_OEMTEXT or CF_UNICODETEXT ||
                normalized.Contains("text",  StringComparison.Ordinal) ||
                normalized.Contains("html",  StringComparison.Ordinal) ||
                normalized.Contains("rtf",   StringComparison.Ordinal) ||
@@ -49,17 +50,17 @@ internal sealed class TextDecodingService : ITextDecodingService
             string   text;
             Encoding encoding;
 
-            if (formatId == 13) // CF_UNICODETEXT
+            if (formatId == CF_UNICODETEXT)
             {
                 text     = Encoding.Unicode.GetString(data).TrimEnd('\0');
                 encoding = Encoding.Unicode;
             }
-            else if (formatId == 1) // CF_TEXT
+            else if (formatId == CF_TEXT)
             {
                 text     = Encoding.Default.GetString(TrimAtNull(data, 1));
                 encoding = Encoding.Default;
             }
-            else if (formatId == 7) // CF_OEMTEXT
+            else if (formatId == CF_OEMTEXT)
             {
                 var oemEncoding = Encoding.GetEncoding((int)NativeMethods.GetOEMCP());
                 text            = oemEncoding.GetString(TrimAtNull(data, 1));

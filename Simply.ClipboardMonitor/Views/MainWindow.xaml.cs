@@ -125,12 +125,7 @@ public partial class MainWindow : Window
         public string                    FormatsTooltip { get; init; } = string.Empty;
 
         public string DateText => Timestamp.ToString("yyyy-MM-dd HH:mm:ss");
-        public string SizeText => TotalSize switch
-        {
-            >= 1024L * 1024 => $"{TotalSize / (1024.0 * 1024):F1} MB",
-            >= 1024         => $"{TotalSize / 1024.0:F1} KB",
-            _               => $"{TotalSize} B",
-        };
+        public string SizeText => DisplayHelper.FormatFileSize(TotalSize);
     }
 
     public MainWindow(
@@ -891,7 +886,7 @@ public partial class MainWindow : Window
         if (_isMonitoring && _isTrackingHistory)
         {
             var size = _historyMaintenance.GetDatabaseFileSize();
-            StatusText.Text = $"Monitoring... · Tracking history ({FormatFileSize(size)} storage size)...";
+            StatusText.Text = $"Monitoring... · Tracking history ({DisplayHelper.FormatFileSize(size)} storage size)...";
         }
         else
         {
@@ -899,13 +894,6 @@ public partial class MainWindow : Window
         }
     }
 
-    private static string FormatFileSize(long bytes) => bytes switch
-    {
-        >= 1024L * 1024 * 1024 => $"{bytes / (1024.0 * 1024 * 1024):F1} GB",
-        >= 1024L * 1024        => $"{bytes / (1024.0 * 1024):F1} MB",
-        >= 1024                => $"{bytes / 1024.0:F1} KB",
-        _                      => $"{bytes} B",
-    };
 
     private void UpdateFileStatusBar(string action, string path)
     {

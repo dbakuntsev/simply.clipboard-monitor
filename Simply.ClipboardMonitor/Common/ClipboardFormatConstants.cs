@@ -75,4 +75,20 @@ internal static class ClipboardFormatConstants
     /// <summary>Formats whose handles cannot be usefully read as raw bytes (e.g. HPALETTE).</summary>
     internal static readonly IReadOnlySet<uint> NonGlobalMemoryFormats =
         new HashSet<uint> { CF_PALETTE };
+
+    // ── Format classification helpers ────────────────────────────────────────
+
+    /// <summary>
+    /// Returns true if the format is likely to contain image data, based on its ID and/or name.
+    /// Covers HBITMAP and DIB handle types, plus common encoded image format names.
+    /// </summary>
+    internal static bool IsImageFormat(uint formatId, string formatName)
+    {
+        if (HBitmapFormats.Contains(formatId) || formatId == CF_DIB || formatId == CF_DIBV5)
+            return true;
+        var n = formatName.ToLowerInvariant();
+        return n.Contains("png")    || n.Contains("jpeg")   || n.Contains("jpg")  ||
+               n.Contains("gif")    || n.Contains("dib")    || n.Contains("bitmap") ||
+               n.Contains("image");
+    }
 }

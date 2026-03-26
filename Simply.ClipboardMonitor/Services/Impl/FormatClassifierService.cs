@@ -70,15 +70,6 @@ internal sealed class FormatClassifierService : IFormatClassifier
 
     // ── Private classification helpers ──────────────────────────────────────
 
-    private static bool IsImageFormat(uint id, string name)
-    {
-        // HBitmapFormats covers CF_BITMAP / CF_DSPBITMAP; DIB formats are CF_DIB and CF_DIBV5.
-        if (HBitmapFormats.Contains(id) || id == CF_DIB || id == CF_DIBV5) return true;
-        var n = name.ToLowerInvariant();
-        return n.Contains("png")    || n.Contains("jpeg") || n.Contains("jpg") ||
-               n.Contains("dib")    || n.Contains("bitmap") || n.Contains("image");
-    }
-
     private static bool IsHtmlFormat(string name) =>
         name.Contains("html", StringComparison.OrdinalIgnoreCase);
 

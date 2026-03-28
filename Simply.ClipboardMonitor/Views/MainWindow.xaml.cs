@@ -80,6 +80,10 @@ public partial class MainWindow : Window
     private bool   _trayBalloonShown;
     private bool   _isExiting;
 
+    // Auto-start / start-minimized state
+    private bool _startAtLogin;
+    private bool _startMinimized;
+
     // Text-preview encoding state
     private byte[]?                      _currentTextBytes;
     private bool                         _suppressEncodingChange;
@@ -191,6 +195,15 @@ public partial class MainWindow : Window
 
         if (_minimizeToSystemTray)
             InitializeTrayIcon();
+
+        if (_startMinimized)
+        {
+            if (_minimizeToSystemTray)
+                // Defer past the Show() call so the window is hidden before it appears.
+                Dispatcher.BeginInvoke(() => { Hide(); ShowTrayBalloonIfNeeded(); });
+            else
+                WindowState = WindowState.Minimized;
+        }
 
         RefreshFormats();
 
@@ -892,6 +905,8 @@ public partial class MainWindow : Window
         {
             StatusText.Text = _isMonitoring ? "Monitoring..." : "Press F5 to refresh";
         }
+
+        AutoStartPill.Visibility = _startAtLogin ? Visibility.Visible : Visibility.Collapsed;
     }
 
 
@@ -988,7 +1003,9 @@ public partial class MainWindow : Window
 
     private void MenuItemSettings_Click(object sender, RoutedEventArgs e)
     {
-        var dlg = new SettingsDialog(_historyMaxEntries, _historyMaxSizeMb, _historyMaintenance, _minimizeToSystemTray) { Owner = this };
+        var dlg = new SettingsDialog(
+            _historyMaxEntries, _historyMaxSizeMb, _historyMaintenance,
+            _minimizeToSystemTray, _startAtLogin, _startMinimized) { Owner = this };
         var result = dlg.ShowDialog();
 
         if (dlg.HistoryWasCleared)
@@ -1014,6 +1031,15 @@ public partial class MainWindow : Window
                 else
                     DisposeTrayIcon();
             }
+
+            if (dlg.StartAtLogin != _startAtLogin)
+            {
+                _startAtLogin = dlg.StartAtLogin;
+                AutoStartHelper.SetAutoStart(_startAtLogin);
+                AutoStartPill.Visibility = _startAtLogin ? Visibility.Visible : Visibility.Collapsed;
+            }
+
+            _startMinimized = dlg.StartMinimized;
 
             SavePreferences();
 
@@ -1394,6 +1420,7 @@ public partial class MainWindow : Window
             _historyMaxSizeMb     = preferences.HistoryMaxSizeMb  > 0 ? preferences.HistoryMaxSizeMb  : DefaultHistoryMaxSizeMb;
             _minimizeToSystemTray = preferences.MinimizeToSystemTray;
             _trayBalloonShown     = preferences.TrayBalloonShown;
+            _startMinimized       = preferences.StartMinimized;
         }
         catch
         {
@@ -1405,6 +1432,10 @@ public partial class MainWindow : Window
             _historyMaxEntries       = DefaultHistoryMaxEntries;
             _historyMaxSizeMb        = DefaultHistoryMaxSizeMb;
         }
+
+        // Always read auto-start from the registry so the UI reflects the actual system state,
+        // even if the entry was manually added or removed outside the app.
+        _startAtLogin = AutoStartHelper.IsAutoStartEnabled();
     }
 
     private void SavePreferences()
@@ -1420,6 +1451,8 @@ public partial class MainWindow : Window
             HistoryMaxSizeMb     = _historyMaxSizeMb,
             MinimizeToSystemTray = _minimizeToSystemTray,
             TrayBalloonShown     = _trayBalloonShown,
+            StartAtLogin         = _startAtLogin,
+            StartMinimized       = _startMinimized,
         };
 
         _preferences.Save(preferences);

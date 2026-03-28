@@ -64,6 +64,20 @@
         </Menu>
 
         <StatusBar DockPanel.Dock="Bottom">
+            <!-- Right-aligned items must be declared before left-aligned ones (DockPanel fill rule). -->
+            <StatusBarItem DockPanel.Dock="Right">
+                <Border x:Name="AutoStartPill"
+                        Background="#FFED7D31"
+                        CornerRadius="3"
+                        Padding="6,1"
+                        Margin="0,0,4,0"
+                        Visibility="Collapsed">
+                    <TextBlock Text="AUTO-START"
+                               Foreground="White"
+                               FontSize="10"
+                               FontWeight="Bold" />
+                </Border>
+            </StatusBarItem>
             <StatusBarItem>
                 <TextBlock x:Name="StatusText" />
             </StatusBarItem>

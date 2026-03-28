@@ -11,5 +11,7 @@ public sealed class UserPreferences
     public int  HistoryMaxSizeMb       { get; set; } = 100;
     public bool MinimizeToSystemTray   { get; set; }
     public bool TrayBalloonShown       { get; set; }
+    public bool StartAtLogin           { get; set; }
+    public bool StartMinimized         { get; set; }
 }
 

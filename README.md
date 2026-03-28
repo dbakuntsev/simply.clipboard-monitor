@@ -155,9 +155,26 @@ Open **File → Settings** and check **Minimize to System Tray**. When the setti
   - **Exit** — closes the application immediately without hiding to the tray.
 - **File → Exit** always exits the application, regardless of the setting.
 
+## Auto-Start
+
+Open **File → Settings** to configure how the application starts.
+
+### Start at login
+
+When **Start at login** is ON, the application registers itself in the Windows current-user auto-start registry key (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) so it launches automatically after login. Disabling the setting removes the entry immediately.
+
+The status bar shows an orange **AUTO-START** pill on the right edge whenever this setting is ON, providing a persistent visual reminder.
+
+### Start minimized
+
+When **Start minimized** is ON, the application window does not appear on screen at startup:
+
+- If **Minimize to System Tray** is also ON — the window is hidden and the tray icon is shown (same as manually closing the window with the tray option enabled).
+- If **Minimize to System Tray** is OFF — the window starts minimized in the taskbar.
+
 ### Persisted preference
 
-The **Minimize to System Tray** setting is saved in `%LOCALAPPDATA%\Simply.ClipboardMonitor\preferences.json` along with a flag that tracks whether the first-minimize balloon notification has been shown (so it appears only once ever).
+The **Minimize to System Tray** setting is saved in `%LOCALAPPDATA%\Simply.ClipboardMonitor\preferences.json` along with a flag that tracks whether the first-minimize balloon notification has been shown (so it appears only once ever). **Start at login** state is read directly from the registry on each launch so the UI always reflects the actual system state.
 
 ## Preview Behavior
 
@@ -228,7 +245,7 @@ A **Save As** dialog opens with the file name pre-set to `clipboard-{format_name
 - `Simply.ClipboardMonitor/App.xaml` / `App.xaml.cs` — WPF application entry point; builds the DI container and registers all services, strategies, and exporters
 - `Simply.ClipboardMonitor/Views/MainWindow.xaml` / `MainWindow.xaml.cs` — main window (clipboard listener, format list, previews, history, export, sort, preferences)
 - `Simply.ClipboardMonitor/Views/AboutDialog.xaml` / `AboutDialog.xaml.cs` — About dialog
-- `Simply.ClipboardMonitor/Views/SettingsDialog.xaml` / `SettingsDialog.xaml.cs` — Settings dialog (history limits, database size display, clear history, minimize-to-tray toggle)
+- `Simply.ClipboardMonitor/Views/SettingsDialog.xaml` / `SettingsDialog.xaml.cs` — Settings dialog (history limits, database size display, clear history, minimize-to-tray, start-at-login, start-minimized toggles)
 
 ### Models
 Data-transfer records and plain model classes with no service dependencies.
@@ -242,7 +259,7 @@ Data-transfer records and plain model classes with no service dependencies.
 - `Models/SavedClipboardFormat.cs` — format row stored in / loaded from a `.clipdb` file
 - `Models/SessionEntry.cs` — one row from the history sessions table
 - `Models/TextDecodeResult.cs` — result of a single text-decode attempt (text, encoding, success/failure)
-- `Models/UserPreferences.cs` — top-level user preferences (sort property/direction, monitor/history settings, limits, minimize-to-tray toggle, balloon-shown flag)
+- `Models/UserPreferences.cs` — top-level user preferences (sort property/direction, monitor/history settings, limits, minimize-to-tray, start-at-login, start-minimized toggles, balloon-shown flag)
 
 ### Services
 Public domain service interfaces consumed by the main window and DI wiring.
@@ -290,7 +307,9 @@ One class per clipboard handle type or export file format. All classes are `inte
 ### Common
 Internal utility types with no domain logic.
 
-- `Common/ClipboardFormatConstants.cs` — Windows clipboard format ID constants (`CF_TEXT`, `CF_BITMAP`, etc.) and handle-type classification sets
+- `Common/AutoStartHelper.cs` — reads and writes the Windows current-user auto-start registry key
+- `Common/ClipboardFormatConstants.cs` — Windows clipboard format ID constants (`CF_TEXT`, `CF_BITMAP`, etc.), handle-type classification sets, and shared image-format detection
+- `Common/DisplayHelper.cs` — shared display formatting utilities (human-readable byte-size strings)
 - `Common/HexRow.cs` — single hex-dump display row (offset, hex bytes, ASCII)
 - `Common/HexRowCollection.cs` — lazy-loaded, cached `IReadOnlyList<HexRow>` over a raw byte array
 - `Common/NativeMethods.cs` — Win32 P/Invoke declarations (`user32.dll`, `kernel32.dll`, `gdi32.dll`, `shell32.dll`)

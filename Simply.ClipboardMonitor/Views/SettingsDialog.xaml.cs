@@ -20,13 +20,23 @@ public partial class SettingsDialog : Window
     /// <summary>Whether "Minimize to System Tray" was checked when OK was pressed.</summary>
     public bool MinimizeToSystemTray { get; private set; }
 
-    internal SettingsDialog(int maxEntries, int maxSizeMb, IHistoryMaintenance history, bool minimizeToSystemTray)
+    /// <summary>Whether "Start at login" was checked when OK was pressed.</summary>
+    public bool StartAtLogin { get; private set; }
+
+    /// <summary>Whether "Start minimized" was checked when OK was pressed.</summary>
+    public bool StartMinimized { get; private set; }
+
+    internal SettingsDialog(
+        int maxEntries, int maxSizeMb, IHistoryMaintenance history,
+        bool minimizeToSystemTray, bool startAtLogin, bool startMinimized)
     {
         _history = history;
         InitializeComponent();
-        MaxEntriesBox.Text               = maxEntries.ToString();
-        MaxSizeMbBox.Text                = maxSizeMb.ToString();
-        MinimizeToTrayCheckBox.IsChecked = minimizeToSystemTray;
+        MaxEntriesBox.Text                = maxEntries.ToString();
+        MaxSizeMbBox.Text                 = maxSizeMb.ToString();
+        MinimizeToTrayCheckBox.IsChecked  = minimizeToSystemTray;
+        StartAtLoginCheckBox.IsChecked    = startAtLogin;
+        StartMinimizedCheckBox.IsChecked  = startMinimized;
         RefreshDbSizeDisplay();
     }
 
@@ -66,7 +76,9 @@ public partial class SettingsDialog : Window
 
         MaxEntries           = entries;
         MaxSizeMb            = sizeMb;
-        MinimizeToSystemTray = MinimizeToTrayCheckBox.IsChecked == true;
+        MinimizeToSystemTray = MinimizeToTrayCheckBox.IsChecked  == true;
+        StartAtLogin         = StartAtLoginCheckBox.IsChecked    == true;
+        StartMinimized       = StartMinimizedCheckBox.IsChecked  == true;
         DialogResult         = true;
     }
 

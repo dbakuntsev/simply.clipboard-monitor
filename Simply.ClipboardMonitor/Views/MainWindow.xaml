@@ -106,6 +106,18 @@
                               SelectionChanged="FormatListBox_OnSelectionChanged"
                               ScrollViewer.HorizontalScrollBarVisibility="Auto"
                               ScrollViewer.VerticalScrollBarVisibility="Auto">
+                        <ListView.ItemContainerStyle>
+                            <Style TargetType="ListViewItem">
+                                <!-- Always reserve the left-border space so text never shifts. -->
+                                <Setter Property="BorderThickness" Value="3,0,0,0" />
+                                <Setter Property="BorderBrush"     Value="Transparent" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsHighlighted}" Value="True">
+                                        <Setter Property="BorderBrush" Value="#FFED7D31" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </ListView.ItemContainerStyle>
                         <ListView.View>
                             <GridView>
                                 <GridViewColumn Width="28" DisplayMemberBinding="{Binding Ordinal}">
@@ -154,7 +166,30 @@
                               ResizeBehavior="PreviousAndNext" />
 
                 <GroupBox Grid.Row="2" Header="Clipboard History">
-                    <ListView x:Name="HistoryListView"
+                    <DockPanel>
+                        <!-- Filter box with placeholder -->
+                        <Grid DockPanel.Dock="Top" Margin="0,0,0,4">
+                            <TextBox x:Name="HistoryFilterBox"
+                                     TextChanged="HistoryFilterBox_TextChanged"
+                                     Padding="3,2" />
+                            <TextBlock Text="Type to filter clipboard history..."
+                                       IsHitTestVisible="False"
+                                       Foreground="DimGray"
+                                       Padding="5,3"
+                                       VerticalAlignment="Center">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding Text, ElementName=HistoryFilterBox}" Value="">
+                                                <Setter Property="Visibility" Value="Visible" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </Grid>
+                        <ListView x:Name="HistoryListView"
                               SelectionChanged="HistoryListView_SelectionChanged"
                               ScrollViewer.HorizontalScrollBarVisibility="Auto"
                               ScrollViewer.VerticalScrollBarVisibility="Auto">
@@ -199,6 +234,7 @@
                             </GridView>
                         </ListView.View>
                     </ListView>
+                    </DockPanel>
                 </GroupBox>
             </Grid>
 

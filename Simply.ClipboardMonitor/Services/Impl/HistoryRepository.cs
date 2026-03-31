@@ -37,6 +37,8 @@ internal sealed class HistoryRepository : IHistoryRepository, IHistoryMaintenanc
     /// </returns>
     public (long SessionId, bool Trimmed) AddSession(
         IReadOnlyList<FormatSnapshot> snapshots,
+        IReadOnlyList<string?>        textContents,
+        string                        pillsText,
         DateTime timestamp,
         int  maxEntries,
         long maxDatabaseBytes)
@@ -53,11 +55,13 @@ internal sealed class HistoryRepository : IHistoryRepository, IHistoryMaintenanc
                 {
                     var formatsText = BuildFormatsText(snapshots);
                     var totalSize   = snapshots.Sum(s => s.OriginalSize);
-                    sessionId       = InsertSession(conn, timestamp, formatsText, totalSize);
+                    sessionId       = InsertSession(conn, timestamp, formatsText, totalSize, pillsText);
 
-                    foreach (var snap in snapshots)
+                    for (var i = 0; i < snapshots.Count; i++)
                     {
-                        var formatDbId = EnsureClipboardFormat(conn, snap.FormatId, snap.FormatName);
+                        var snap        = snapshots[i];
+                        var textContent = i < textContents.Count ? textContents[i] : null;
+                        var formatDbId  = EnsureClipboardFormat(conn, snap.FormatId, snap.FormatName);
                         long? contentId = null;
 
                         if (snap.Data is { Length: > 0 })
@@ -66,7 +70,7 @@ internal sealed class HistoryRepository : IHistoryRepository, IHistoryMaintenanc
                             contentId = EnsureContent(conn, hash, snap.Data, snap.OriginalSize);
                         }
 
-                        InsertSessionItem(conn, sessionId, snap.Ordinal, formatDbId, contentId, snap.HandleType);
+                        InsertSessionItem(conn, sessionId, snap.Ordinal, formatDbId, contentId, snap.HandleType, textContent);
                     }
 
                     tx.Commit();
@@ -133,6 +137,27 @@ internal sealed class HistoryRepository : IHistoryRepository, IHistoryMaintenanc
     }
 
     /// <summary>
+    /// Opens the existing database (if any) and applies any pending schema migrations.
+    /// No-op when the database does not yet exist.
+    /// Intended to be called from a background thread on application startup.
+    /// </summary>
+    public void MigrateSchema()
+    {
+        if (!File.Exists(DbPath))
+            return;
+
+        try
+        {
+            using var conn = OpenConnection(readOnly: false);
+            CreateSchema(conn);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    /// <summary>
     /// Deletes all sessions, items, and content blobs, then compacts the file with VACUUM.
     /// Safe to call when the database does not yet exist.
     /// </summary>
@@ -167,11 +192,8 @@ internal sealed class HistoryRepository : IHistoryRepository, IHistoryMaintenanc
         }
     }
 
-    /// <summary>
-    /// Returns all sessions ordered newest-first (up to <paramref name="maxCount"/>).
-    /// Returns an empty list if the database does not exist yet.
-    /// </summary>
-    public List<SessionEntry> LoadSessions(int maxCount = 2000)
+    /// <inheritdoc/>
+    public List<SessionEntry> LoadSessions(string? filter = null, int maxCount = 2000)
     {
         if (!File.Exists(DbPath))
             return [];
@@ -180,18 +202,43 @@ internal sealed class HistoryRepository : IHistoryRepository, IHistoryMaintenanc
         {
             using var conn = OpenConnection(readOnly: true);
             using var cmd  = conn.CreateCommand();
-            // GROUP_CONCAT produces "formatId<TAB>formatName" pairs joined by newlines,
-            // one per format in the session (ordered by item ordinal via subquery).
-            cmd.CommandText = """
-                SELECT s.id, s.timestamp, s.formats_text, s.total_size,
-                       GROUP_CONCAT(CAST(cf.format_id AS TEXT) || char(9) || cf.format_name, char(10))
-                FROM   sessions s
-                LEFT JOIN session_items    si ON si.session_id          = s.id
-                LEFT JOIN clipboard_formats cf ON cf.id                 = si.clipboard_format_id
-                GROUP  BY s.id
-                ORDER  BY s.id DESC
-                LIMIT  @limit
-                """;
+
+            if (string.IsNullOrWhiteSpace(filter))
+            {
+                // Unfiltered: GROUP BY with GROUP_CONCAT for formats in one pass.
+                cmd.CommandText = """
+                    SELECT s.id, s.timestamp, s.formats_text, s.total_size,
+                           GROUP_CONCAT(CAST(cf.format_id AS TEXT) || char(9) || cf.format_name, char(10))
+                    FROM   sessions s
+                    LEFT JOIN session_items     si ON si.session_id         = s.id
+                    LEFT JOIN clipboard_formats cf ON cf.id                 = si.clipboard_format_id
+                    GROUP  BY s.id
+                    ORDER  BY s.id DESC
+                    LIMIT  @limit
+                    """;
+            }
+            else
+            {
+                // Filtered: DISTINCT rows matching the term; formats via correlated subquery.
+                cmd.CommandText = """
+                    SELECT DISTINCT s.id, s.timestamp, s.formats_text, s.total_size,
+                        (SELECT GROUP_CONCAT(CAST(cf2.format_id AS TEXT) || char(9) || cf2.format_name, char(10))
+                         FROM   session_items si2
+                         JOIN   clipboard_formats cf2 ON cf2.id = si2.clipboard_format_id
+                         WHERE  si2.session_id = s.id) AS formats_concat
+                    FROM   sessions s
+                    LEFT JOIN session_items     si ON si.session_id         = s.id
+                    LEFT JOIN clipboard_formats cf ON cf.id                 = si.clipboard_format_id
+                    WHERE  LOWER(s.timestamp)      LIKE @term
+                       OR  LOWER(s.pills_text)     LIKE @term
+                       OR  LOWER(cf.format_name)   LIKE @term
+                       OR  LOWER(si.text_content)  LIKE @term
+                    ORDER  BY s.id DESC
+                    LIMIT  @limit
+                    """;
+                cmd.Parameters.AddWithValue("@term", $"%{filter.ToLowerInvariant()}%");
+            }
+
             cmd.Parameters.AddWithValue("@limit", maxCount);
 
             var result = new List<SessionEntry>();
@@ -203,7 +250,7 @@ internal sealed class HistoryRepository : IHistoryRepository, IHistoryMaintenanc
                 var formatsText = reader.GetString(2);
                 var totalSize   = reader.GetInt64(3);
 
-                // Parse "id\tname\nid\tname\n..." into a typed list.
+                // Parse "formatId<TAB>formatName\n..." into a typed list.
                 var formats = new List<(uint FormatId, string FormatName)>();
                 if (!reader.IsDBNull(4))
                 {
@@ -295,7 +342,8 @@ internal sealed class HistoryRepository : IHistoryRepository, IHistoryMaintenanc
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp    TEXT    NOT NULL,
                 formats_text TEXT    NOT NULL,
-                total_size   INTEGER NOT NULL
+                total_size   INTEGER NOT NULL,
+                pills_text   TEXT    NOT NULL DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS clipboard_formats (
@@ -317,25 +365,46 @@ internal sealed class HistoryRepository : IHistoryRepository, IHistoryMaintenanc
                 ordinal              INTEGER NOT NULL,
                 clipboard_format_id  INTEGER NOT NULL REFERENCES clipboard_formats(id),
                 clipboard_content_id INTEGER          REFERENCES clipboard_contents(id),
-                handle_type          TEXT    NOT NULL
+                handle_type          TEXT    NOT NULL,
+                text_content         TEXT
             );
             """;
         cmd.ExecuteNonQuery();
+
+        // Migrate existing databases that predate the search columns.
+        AddColumnIfMissing(conn, "sessions",      "pills_text",    "TEXT NOT NULL DEFAULT ''");
+        AddColumnIfMissing(conn, "session_items", "text_content",  "TEXT");
+    }
+
+    private static void AddColumnIfMissing(SqliteConnection conn, string table, string column, string definition)
+    {
+        using var info = conn.CreateCommand();
+        info.CommandText = $"PRAGMA table_info({table})";
+        using var reader = info.ExecuteReader();
+        while (reader.Read())
+        {
+            if (string.Equals(reader.GetString(1), column, StringComparison.OrdinalIgnoreCase))
+                return; // already exists
+        }
+        using var alter = conn.CreateCommand();
+        alter.CommandText = $"ALTER TABLE {table} ADD COLUMN {column} {definition}";
+        alter.ExecuteNonQuery();
     }
 
     // ── Write helpers ────────────────────────────────────────────────────────
 
-    private long InsertSession(SqliteConnection conn, DateTime timestamp, string formatsText, long totalSize)
+    private long InsertSession(SqliteConnection conn, DateTime timestamp, string formatsText, long totalSize, string pillsText)
     {
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO sessions (timestamp, formats_text, total_size)
-            VALUES (@timestamp, @formatsText, @totalSize);
+            INSERT INTO sessions (timestamp, formats_text, total_size, pills_text)
+            VALUES (@timestamp, @formatsText, @totalSize, @pillsText);
             SELECT last_insert_rowid();
             """;
         cmd.Parameters.AddWithValue("@timestamp",   timestamp.ToString("O"));
         cmd.Parameters.AddWithValue("@formatsText", formatsText);
         cmd.Parameters.AddWithValue("@totalSize",   totalSize);
+        cmd.Parameters.AddWithValue("@pillsText",   pillsText);
         return (long)cmd.ExecuteScalar()!;
     }
 
@@ -383,19 +452,20 @@ internal sealed class HistoryRepository : IHistoryRepository, IHistoryMaintenanc
     }
 
     private void InsertSessionItem(SqliteConnection conn, long sessionId, int ordinal,
-        long formatDbId, long? contentId, string handleType)
+        long formatDbId, long? contentId, string handleType, string? textContent)
     {
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             INSERT INTO session_items
-                (session_id, ordinal, clipboard_format_id, clipboard_content_id, handle_type)
-            VALUES (@sessionId, @ordinal, @formatId, @contentId, @handleType)
+                (session_id, ordinal, clipboard_format_id, clipboard_content_id, handle_type, text_content)
+            VALUES (@sessionId, @ordinal, @formatId, @contentId, @handleType, @textContent)
             """;
-        cmd.Parameters.AddWithValue("@sessionId",  sessionId);
-        cmd.Parameters.AddWithValue("@ordinal",    ordinal);
-        cmd.Parameters.AddWithValue("@formatId",   formatDbId);
-        cmd.Parameters.AddWithValue("@contentId",  (object?)contentId ?? DBNull.Value);
-        cmd.Parameters.AddWithValue("@handleType", handleType);
+        cmd.Parameters.AddWithValue("@sessionId",   sessionId);
+        cmd.Parameters.AddWithValue("@ordinal",     ordinal);
+        cmd.Parameters.AddWithValue("@formatId",    formatDbId);
+        cmd.Parameters.AddWithValue("@contentId",   (object?)contentId ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@handleType",  handleType);
+        cmd.Parameters.AddWithValue("@textContent", (object?)textContent ?? DBNull.Value);
         cmd.ExecuteNonQuery();
     }
 
@@ -412,6 +482,56 @@ internal sealed class HistoryRepository : IHistoryRepository, IHistoryMaintenanc
     {
         var joined = string.Join(", ", snapshots.Select(s => s.FormatName));
         return joined.Length > 80 ? joined[..77] + "..." : joined;
+    }
+
+    /// <inheritdoc/>
+    public bool IsDuplicateOfLastSession(IReadOnlyList<FormatSnapshot> snapshots)
+    {
+        if (!File.Exists(DbPath) || snapshots.Count == 0)
+            return false;
+
+        try
+        {
+            using var conn = OpenConnection(readOnly: true);
+            using var cmd  = conn.CreateCommand();
+            cmd.CommandText = """
+                SELECT cf.format_name, cc.content_hash
+                FROM   session_items si
+                JOIN   clipboard_formats    cf ON cf.id = si.clipboard_format_id
+                LEFT JOIN clipboard_contents cc ON cc.id = si.clipboard_content_id
+                WHERE  si.session_id = (SELECT MAX(id) FROM sessions)
+                ORDER  BY si.ordinal
+                """;
+
+            var lastItems = new List<(string Name, string? Hash)>();
+            using (var reader = cmd.ExecuteReader())
+            {
+                while (reader.Read())
+                    lastItems.Add((reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1)));
+            }
+
+            if (lastItems.Count != snapshots.Count)
+                return false;
+
+            for (var i = 0; i < snapshots.Count; i++)
+            {
+                var snap              = snapshots[i];
+                var (lastName, lastHash) = lastItems[i];
+
+                if (!string.Equals(snap.FormatName, lastName, StringComparison.Ordinal))
+                    return false;
+
+                var currentHash = snap.Data is { Length: > 0 } ? ComputeHash(snap.Data) : null;
+                if (currentHash != lastHash)
+                    return false;
+            }
+
+            return true;
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
     }
 
     // ── Limit enforcement ────────────────────────────────────────────────────

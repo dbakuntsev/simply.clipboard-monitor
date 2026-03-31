@@ -96,6 +96,10 @@ public partial class MainWindow : Window
     private uint    _currentFormatId;
     private string  _currentFormatName = string.Empty;
 
+    // History filtering state
+    private string                    _historyFilter = string.Empty;
+    private CancellationTokenSource?  _filterCts;
+
     // History limits (kept in sync with UserPreferences)
     private const int DefaultHistoryMaxEntries = 100;
     private const int DefaultHistoryMaxSizeMb  = 100;
@@ -210,8 +214,17 @@ public partial class MainWindow : Window
         if (!_isMonitoring)
             CaptureStaticSnapshot();
 
+        // Migrate an existing database before the first load so that the new search
+        // columns are present and filtering works correctly from the first keystroke.
+        _historyChannel.Writer.TryWrite(() => _historyMaintenance.MigrateSchema());
+
         if (_isTrackingHistory)
+        {
             LoadHistoryFromDatabase();
+            // Capture the current clipboard so it appears in history immediately;
+            // if it matches the last recorded session, that session is selected instead.
+            CaptureStartupSession();
+        }
     }
 
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
@@ -1612,6 +1625,7 @@ public partial class MainWindow : Window
         {
             ShowHistoryPanel();
             LoadHistoryFromDatabase();
+            CaptureStartupSession();
         }
         else
         {
@@ -1648,12 +1662,50 @@ public partial class MainWindow : Window
         InitializePreviewState();
         _formats.Clear();
 
+        var filterTerm = string.IsNullOrWhiteSpace(_historyFilter) ? null : _historyFilter.Trim();
         foreach (var snap in snapshots)
         {
             var contentSize      = snap.OriginalSize > 0 ? snap.OriginalSize.ToString("N0") : "n/a";
             var contentSizeValue = snap.OriginalSize > 0 ? snap.OriginalSize : -1L;
-            _formats.Add(new ClipboardFormatItem(snap.Ordinal, snap.FormatId, snap.FormatName, contentSize, contentSizeValue));
+            _formats.Add(new ClipboardFormatItem(snap.Ordinal, snap.FormatId, snap.FormatName, contentSize, contentSizeValue)
+            {
+                IsHighlighted = filterTerm != null &&
+                                (snap.FormatName.Contains(filterTerm, StringComparison.OrdinalIgnoreCase) ||
+                                 (_formatClassifier.GetFormatPillLabel(snap.FormatId, snap.FormatName)
+                                      ?.Contains(filterTerm, StringComparison.OrdinalIgnoreCase) ?? false))
+            });
         }
+    }
+
+    private void HistoryFilterBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        _historyFilter = HistoryFilterBox.Text;
+
+        _filterCts?.Cancel();
+        _filterCts = new CancellationTokenSource();
+        var token = _filterCts.Token;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(200, token);
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    if (!token.IsCancellationRequested)
+                    {
+                        var filter = string.IsNullOrWhiteSpace(_historyFilter) ? null : _historyFilter;
+                        if (filter == null)
+                            // Filter removed: show all history and select the latest entry (req 5).
+                            LoadHistoryFromDatabase(null, selectFirst: true);
+                        else
+                            // Filter changed: keep the current selection if still visible (req 4).
+                            LoadHistoryFromDatabase(filter, (HistoryListView.SelectedItem as HistoryItem)?.SessionId);
+                    }
+                });
+            }
+            catch (OperationCanceledException) { }
+        });
     }
 
     private void CaptureHistorySession(uint seqAtArrival)
@@ -1678,6 +1730,64 @@ public partial class MainWindow : Window
             return;
 
         _historyChannel.Writer.TryWrite(() => WriteHistorySession(snapshots, timestamp));
+    }
+
+    /// <summary>
+    /// Called once on startup (after the initial history load) to snapshot the current
+    /// clipboard and record it as a new session if it differs from the last saved entry.
+    /// Runs the DB work through the history channel so it is ordered after
+    /// <see cref="IHistoryMaintenance.MigrateSchema"/>.
+    /// </summary>
+    private void CaptureStartupSession()
+    {
+        if (_formats.Count == 0)
+            return;
+
+        var timestamp = DateTime.Now;
+        var snapshots = _clipboardReader.CaptureAllFormats(_formats.ToList());
+        if (snapshots.Count == 0)
+            return;
+
+        _historyChannel.Writer.TryWrite(() => WriteStartupSession(snapshots, timestamp));
+    }
+
+    /// <summary>
+    /// Background-thread handler for the startup clipboard snapshot.
+    /// Writes a new session only when the clipboard differs from the last history entry;
+    /// always finishes by reloading the history list on the UI thread and selecting the
+    /// newest entry (whether newly added or the pre-existing last one).
+    /// </summary>
+    private void WriteStartupSession(IReadOnlyList<FormatSnapshot> snapshots, DateTime timestamp)
+    {
+        try
+        {
+            if (!_history.IsDuplicateOfLastSession(snapshots))
+            {
+                var formats      = snapshots.Select(s => (s.FormatId, s.FormatName)).ToList();
+                var pills        = _formatClassifier.ComputePills(formats);
+                var pillsText    = string.Join(" ", pills.Select(p => p.Label));
+                var textContents = snapshots
+                    .Select(s =>
+                    {
+                        if (s.Data == null) return (string?)null;
+                        var result = _textDecoding.Decode(s.FormatId, s.FormatName, s.Data);
+                        return result.Success ? result.Text : null;
+                    })
+                    .ToList();
+                var maxDatabaseBytes = (long)_historyMaxSizeMb * 1024L * 1024L;
+                _history.AddSession(snapshots, textContents, pillsText, timestamp,
+                    _historyMaxEntries, maxDatabaseBytes);
+            }
+        }
+        catch
+        {
+            // Silently ignore write failures.
+        }
+        finally
+        {
+            // Reload the list and select the newest entry (new or duplicate) in all cases.
+            Dispatcher.InvokeAsync(() => LoadHistoryFromDatabase(null, selectFirst: true));
+        }
     }
 
     /// <summary>
@@ -1721,26 +1831,48 @@ public partial class MainWindow : Window
         try
         {
             var maxDatabaseBytes = (long)_historyMaxSizeMb * 1024L * 1024L;
-            var (sessionId, trimmed) = _history.AddSession(snapshots, timestamp, _historyMaxEntries, maxDatabaseBytes);
-            var formatsText = _history.BuildFormatsText(snapshots);
-            var totalSize   = snapshots.Sum(s => s.OriginalSize);
 
             var formats = snapshots.Select(s => (s.FormatId, s.FormatName)).ToList();
 
-            // Build pills and tooltip on the background thread (they are read-only
-            // after construction and the service is thread-safe).
-            var pills   = _formatClassifier.ComputePills(formats);
-            var tooltip = _formatClassifier.ComputeTooltip(formats);
+            // Build pills, tooltip, and pillsText on the background thread (services are thread-safe).
+            var pills      = _formatClassifier.ComputePills(formats);
+            var tooltip    = _formatClassifier.ComputeTooltip(formats);
+            var pillsText  = string.Join(" ", pills.Select(p => p.Label));
+
+            // Decode text content for each format so it is stored in the DB and becomes searchable.
+            var textContents = snapshots
+                .Select(s =>
+                {
+                    if (s.Data == null) return (string?)null;
+                    var result = _textDecoding.Decode(s.FormatId, s.FormatName, s.Data);
+                    return result.Success ? result.Text : null;
+                })
+                .ToList();
+
+            var (sessionId, trimmed) = _history.AddSession(
+                snapshots, textContents, pillsText, timestamp, _historyMaxEntries, maxDatabaseBytes);
+
+            var formatsText = _history.BuildFormatsText(snapshots);
+            var totalSize   = snapshots.Sum(s => s.OriginalSize);
 
             Dispatcher.InvokeAsync(() =>
             {
-                if (trimmed)
+                var activeFilter = _historyFilter;
+                if (trimmed || !string.IsNullOrEmpty(activeFilter))
                 {
-                    // Old sessions were deleted — reload the list so stale entries
-                    // are removed, then select the newly-added entry at the top.
-                    LoadHistoryFromDatabase();
-                    if (_historyItems.Count > 0)
-                        HistoryListView.SelectedItem = _historyItems[0];
+                    if (string.IsNullOrEmpty(activeFilter))
+                    {
+                        // Trimmed with no active filter: reload and select the newest entry.
+                        LoadHistoryFromDatabase(null, selectFirst: true);
+                    }
+                    else
+                    {
+                        // Filter is active: reload the filtered list while keeping the
+                        // current selection if it still appears in the results (req 3 & 4).
+                        // If it no longer matches the filter the panel is cleared (req 2).
+                        var preserve = (HistoryListView.SelectedItem as HistoryItem)?.SessionId;
+                        LoadHistoryFromDatabase(activeFilter, preserve);
+                    }
                 }
                 else
                 {
@@ -1766,11 +1898,14 @@ public partial class MainWindow : Window
         }
     }
 
-    private void LoadHistoryFromDatabase()
+    private void LoadHistoryFromDatabase(
+        string? filter            = null,
+        long?   preserveSessionId = null,
+        bool    selectFirst       = false)
     {
         try
         {
-            var sessions = _history.LoadSessions();
+            var sessions = _history.LoadSessions(filter);
             _historyItems.Clear();
             foreach (var session in sessions)
             {
@@ -1788,6 +1923,27 @@ public partial class MainWindow : Window
                     FormatsTooltip = tooltip,
                 });
             }
+
+            // Determine which item to (re)select after the reload.
+            HistoryItem? toSelect = null;
+            if (preserveSessionId.HasValue)
+                toSelect = _historyItems.FirstOrDefault(h => h.SessionId == preserveSessionId.Value);
+            else if (selectFirst && _historyItems.Count > 0)
+                toSelect = _historyItems[0];
+
+            // When a selection was requested but no qualifying item exists (filter
+            // removed the previously selected session, or the database is empty),
+            // explicitly clear the format panel so it does not show stale history data.
+            if (toSelect == null && (preserveSessionId.HasValue || selectFirst))
+            {
+                _historySnapshots = null;
+                InitializePreviewState();
+                _formats.Clear();
+            }
+
+            HistoryListView.SelectedItem = toSelect;
+            if (toSelect != null)
+                HistoryListView.ScrollIntoView(toSelect);
         }
         catch
         {

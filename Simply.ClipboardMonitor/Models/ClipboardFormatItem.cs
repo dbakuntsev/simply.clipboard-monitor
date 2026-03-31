@@ -8,4 +8,10 @@ public sealed class ClipboardFormatItem(int ordinal, uint formatId, string name,
     public string Name { get; } = name;
     public string ContentSize { get; } = contentSize;
     public long ContentSizeValue { get; } = contentSizeValue;
+
+    /// <summary>
+    /// Set to <see langword="true"/> when this format row should be visually highlighted
+    /// because its name matches the current history filter.
+    /// </summary>
+    public bool IsHighlighted { get; set; }
 }

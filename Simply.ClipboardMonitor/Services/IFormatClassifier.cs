@@ -15,4 +15,11 @@ public interface IFormatClassifier
     /// <summary>Builds the multi-line tooltip text for a history row.</summary>
     string ComputeTooltip(
         IReadOnlyList<(uint FormatId, string FormatName)> formats);
+
+    /// <summary>
+    /// Returns the pill label (<c>"IMG"</c>, <c>"TXT"</c>, <c>"HTML"</c>,
+    /// <c>"RTF"</c>, or <c>"FILE"</c>) for a single format, or
+    /// <see langword="null"/> when the format falls into the uncategorised bucket.
+    /// </summary>
+    string? GetFormatPillLabel(uint formatId, string formatName);
 }

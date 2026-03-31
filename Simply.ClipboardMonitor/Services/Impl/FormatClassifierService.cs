@@ -87,4 +87,15 @@ internal sealed class FormatClassifierService : IFormatClassifier
     }
 
     private static bool IsFileFormat(uint id) => id == CF_HDROP;
+
+    /// <inheritdoc/>
+    public string? GetFormatPillLabel(uint formatId, string formatName)
+    {
+        if (IsImageFormat(formatId, formatName)) return "IMG";
+        if (IsHtmlFormat(formatName))            return "HTML";
+        if (IsRtfFormat(formatName))             return "RTF";
+        if (IsTextFormat(formatId, formatName))  return "TXT";
+        if (IsFileFormat(formatId))              return "FILE";
+        return null;
+    }
 }

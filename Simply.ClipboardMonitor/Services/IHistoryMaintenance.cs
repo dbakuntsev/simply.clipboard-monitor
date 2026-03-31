@@ -18,6 +18,14 @@ public interface IHistoryMaintenance
     bool EnforceLimits(int maxEntries, long maxDatabaseBytes);
 
     /// <summary>
+    /// Applies any pending schema migrations (e.g. adding new columns) to an existing
+    /// database so that search features work immediately on startup.
+    /// No-op when the database does not yet exist.
+    /// Safe to call from a background thread.
+    /// </summary>
+    void MigrateSchema();
+
+    /// <summary>
     /// Deletes all sessions, items, and content blobs, then compacts the file with VACUUM.
     /// Safe to call when the database does not yet exist.
     /// </summary>

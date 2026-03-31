@@ -167,11 +167,11 @@
 
                 <GroupBox Grid.Row="2" Header="Clipboard History">
                     <DockPanel>
-                        <!-- Filter box with placeholder -->
+                        <!-- Filter box with placeholder and inline clear button -->
                         <Grid DockPanel.Dock="Top" Margin="0,0,0,4">
                             <TextBox x:Name="HistoryFilterBox"
                                      TextChanged="HistoryFilterBox_TextChanged"
-                                     Padding="3,2" />
+                                     Padding="3,2,20,2" />
                             <TextBlock Text="Type to filter clipboard history..."
                                        IsHitTestVisible="False"
                                        Foreground="DimGray"
@@ -188,6 +188,33 @@
                                     </Style>
                                 </TextBlock.Style>
                             </TextBlock>
+                            <Button HorizontalAlignment="Right"
+                                    VerticalAlignment="Center"
+                                    Width="18" Height="18"
+                                    Margin="0,0,2,0"
+                                    Padding="0"
+                                    FontSize="11"
+                                    Focusable="False"
+                                    BorderThickness="0"
+                                    ToolTip="Clear filter"
+                                    Click="HistoryFilterClearButton_Click">
+                                <Button.Content>&#xD7;</Button.Content>
+                                <Button.Style>
+                                    <Style TargetType="Button">
+                                        <Setter Property="Background"  Value="Transparent" />
+                                        <Setter Property="BorderBrush" Value="Transparent" />
+                                        <Setter Property="Foreground"  Value="DimGray" />
+                                        <Setter Property="Cursor"      Value="Arrow" />
+                                        <!-- Visible whenever the filter box has text. -->
+                                        <Setter Property="Visibility"  Value="Visible" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding Text, ElementName=HistoryFilterBox}" Value="">
+                                                <Setter Property="Visibility" Value="Collapsed" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Button.Style>
+                            </Button>
                         </Grid>
                         <ListView x:Name="HistoryListView"
                               SelectionChanged="HistoryListView_SelectionChanged"

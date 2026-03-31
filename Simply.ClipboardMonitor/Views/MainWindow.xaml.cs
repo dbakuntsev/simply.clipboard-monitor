@@ -1677,6 +1677,12 @@ public partial class MainWindow : Window
         }
     }
 
+    private void HistoryFilterClearButton_Click(object sender, RoutedEventArgs e)
+    {
+        HistoryFilterBox.Clear();
+        HistoryFilterBox.Focus();
+    }
+
     private void HistoryFilterBox_TextChanged(object sender, TextChangedEventArgs e)
     {
         _historyFilter = HistoryFilterBox.Text;

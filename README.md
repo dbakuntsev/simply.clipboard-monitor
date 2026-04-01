@@ -117,6 +117,20 @@ Each row in the history list shows:
 
 Clicking a row retrieves that session's format snapshots for preview, exactly as they were at the time of capture.
 
+### Startup and toggle-on capture
+
+When **Track History** is enabled — either because it was on at last exit and is restored on startup, or because the user enables it manually — the current clipboard contents are automatically captured as a new history entry if they differ from the most recently recorded session. If the clipboard matches the last entry, that entry is selected instead. This ensures the history list always starts with the current clipboard state.
+
+### Filtering
+
+A filter box sits at the top of the history panel. Typing text in narrows the list to sessions whose timestamp, format pill labels, format names, or decoded text content contains the search term.
+
+- The search is case-insensitive
+- When a session is selected while a filter is active, format rows that match the filter term are highlighted with an orange left border.
+  - Format rows are highlighted when the filter term appears in the **format name** or in the format's **pill label** (e.g. typing `img` highlights every image-compatible format, not only those whose registered name contains those letters).
+- Clearing the filter (typing or clicking **×**) reloads the full list and automatically selects the latest session.
+- New clipboard events captured while a filter is active re-run the filtered query; the format panel remains unchanged if the new session does not match the current filter.
+
 ### History database
 
 History is persisted to `%LOCALAPPDATA%\Simply.ClipboardMonitor\history.db` (an SQLite database). Blob data is stored compressed (ZStandard at maximum level) and content-addressed by SHA-256 hash, so identical payloads shared across different formats and different sessions are stored only once.
@@ -124,8 +138,10 @@ History is persisted to `%LOCALAPPDATA%\Simply.ClipboardMonitor\history.db` (an 
 The database schema has four tables:
 - `clipboard_formats` — the set of all format names and IDs ever seen.
 - `clipboard_contents` — deduplicated compressed blobs, keyed by SHA-256 hash.
-- `sessions` — one row per clipboard change, with timestamp, formats summary text, and total uncompressed size.
-- `session_items` — joins sessions to their per-format blobs.
+- `sessions` — one row per clipboard change, with timestamp, formats summary text, total uncompressed size, and a space-separated list of pill labels (`pills_text`) used for fast pill-label filtering.
+- `session_items` — joins sessions to their per-format blobs; includes a `text_content` column storing the decoded text for text-like formats, used for full-text filtering.
+
+The schema is migrated automatically on first launch after an upgrade — new columns are added with `ALTER TABLE … ADD COLUMN` when they are missing, so existing databases are upgraded in place without data loss.
 
 ### History limits
 
@@ -250,7 +266,7 @@ A **Save As** dialog opens with the file name pre-set to `clipboard-{format_name
 ### Models
 Data-transfer records and plain model classes with no service dependencies.
 
-- `Models/ClipboardFormatItem.cs` — format list row model (ordinal, ID, name, content size)
+- `Models/ClipboardFormatItem.cs` — format list row model (ordinal, ID, name, content size, filter-highlight flag)
 - `Models/EncodingItem.cs` — encoding display name + `Encoding` pair for the encoding combo box
 - `Models/FormatColumnPreference.cs` — saved column width preference
 - `Models/FormatExportContext.cs` — context record passed to `IFormatExporter` implementations
@@ -269,8 +285,8 @@ Public domain service interfaces consumed by the main window and DI wiring.
 - `Services/IClipboardWriter.cs` — restore saved formats back onto the clipboard
 - `Services/IFormatClassifier.cs` — classify formats into colored pills and tooltip text for the history list
 - `Services/IFormatExporter.cs` — export a clipboard format to a file (one implementation per output type)
-- `Services/IHistoryMaintenance.cs` — database maintenance operations (enforce size limits, clear history)
-- `Services/IHistoryRepository.cs` — clipboard history persistence (add session, load sessions and formats)
+- `Services/IHistoryMaintenance.cs` — database maintenance operations (schema migration, enforce size limits, clear history)
+- `Services/IHistoryRepository.cs` — clipboard history persistence (add session, load sessions with optional filter, load session formats, duplicate detection)
 - `Services/IImagePreviewService.cs` — create WPF `BitmapSource` previews from raw clipboard bytes
 - `Services/IPreferencesService.cs` — load and save user preferences
 - `Services/ITextDecodingService.cs` — decode raw bytes as text with auto-detection or manual encoding override
@@ -284,7 +300,7 @@ Concrete service implementations. All classes are `internal sealed`.
 - `Services/Impl/ClipboardReaderService.cs` — Win32 clipboard reading; dispatches per-handle-type work to injected `IHandleReadStrategy` implementations
 - `Services/Impl/ClipboardWriterService.cs` — Win32 clipboard writing; dispatches per-handle-type work to injected `IHandleWriteStrategy` implementations
 - `Services/Impl/FormatClassifierService.cs` — produces colored pills and tooltip text for the history list
-- `Services/Impl/HistoryRepository.cs` — history database (SQLite, ZStandard compression, SHA-256 deduplication, session trimming); implements both `IHistoryRepository` and `IHistoryMaintenance`
+- `Services/Impl/HistoryRepository.cs` — history database (SQLite, ZStandard compression, SHA-256 deduplication, session trimming, schema migration, duplicate detection); implements both `IHistoryRepository` and `IHistoryMaintenance`
 - `Services/Impl/ImagePreviewService.cs` — decodes DIB, HBITMAP-derived, and encoded image formats into WPF `BitmapSource` objects
 - `Services/Impl/PreferencesService.cs` — JSON preferences persisted to `%LOCALAPPDATA%\Simply.ClipboardMonitor\preferences.json`
 - `Services/Impl/TextDecodingService.cs` — text decoding with format-aware priority chain and UTF-16 heuristics

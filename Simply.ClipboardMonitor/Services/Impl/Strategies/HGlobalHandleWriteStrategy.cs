@@ -1,4 +1,5 @@
 using Simply.ClipboardMonitor.Common;
+using static Simply.ClipboardMonitor.Common.ClipboardFormatConstants;
 using System.Runtime.InteropServices;
 
 namespace Simply.ClipboardMonitor.Services.Impl.Strategies;
@@ -8,7 +9,7 @@ namespace Simply.ClipboardMonitor.Services.Impl.Strategies;
 /// </summary>
 internal sealed class HGlobalHandleWriteStrategy : IHandleWriteStrategy
 {
-    public string HandleType => "hglobal";
+    public string HandleType => HandleTypes.HGlobal;
 
     public void Restore(uint formatId, byte[]? data)
     {

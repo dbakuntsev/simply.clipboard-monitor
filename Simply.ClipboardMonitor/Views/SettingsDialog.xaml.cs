@@ -52,27 +52,27 @@ public partial class SettingsDialog : Window
         RefreshDbSizeDisplay();
     }
 
+    private bool ValidatePositiveInt(System.Windows.Controls.TextBox box, string fieldName, out int value)
+    {
+        if (!int.TryParse(box.Text.Trim(), out value) || value < 1)
+        {
+            MessageBox.Show(
+                $"{fieldName} must be a positive integer.",
+                "Invalid Value", MessageBoxButton.OK, MessageBoxImage.Warning);
+            box.Focus();
+            box.SelectAll();
+            return false;
+        }
+        return true;
+    }
+
     private void OkButton_Click(object sender, RoutedEventArgs e)
     {
-        if (!int.TryParse(MaxEntriesBox.Text.Trim(), out var entries) || entries < 1)
-        {
-            MessageBox.Show(
-                "Maximum number of entries must be a positive integer.",
-                "Invalid Value", MessageBoxButton.OK, MessageBoxImage.Warning);
-            MaxEntriesBox.Focus();
-            MaxEntriesBox.SelectAll();
+        if (!ValidatePositiveInt(MaxEntriesBox, "Maximum number of entries", out var entries))
             return;
-        }
 
-        if (!int.TryParse(MaxSizeMbBox.Text.Trim(), out var sizeMb) || sizeMb < 1)
-        {
-            MessageBox.Show(
-                "Maximum database size must be a positive integer.",
-                "Invalid Value", MessageBoxButton.OK, MessageBoxImage.Warning);
-            MaxSizeMbBox.Focus();
-            MaxSizeMbBox.SelectAll();
+        if (!ValidatePositiveInt(MaxSizeMbBox, "Maximum database size", out var sizeMb))
             return;
-        }
 
         MaxEntries           = entries;
         MaxSizeMb            = sizeMb;

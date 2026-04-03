@@ -1,4 +1,5 @@
 using Simply.ClipboardMonitor.Common;
+using static Simply.ClipboardMonitor.Common.ClipboardFormatConstants;
 
 namespace Simply.ClipboardMonitor.Services.Impl.Strategies;
 
@@ -7,7 +8,7 @@ namespace Simply.ClipboardMonitor.Services.Impl.Strategies;
 /// </summary>
 internal sealed class HEnhMetaFileHandleWriteStrategy : IHandleWriteStrategy
 {
-    public string HandleType => "henhmetafile";
+    public string HandleType => HandleTypes.HEnhMetaFile;
 
     public void Restore(uint formatId, byte[]? data)
     {

@@ -2,6 +2,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.Win32;
 using System.Threading.Channels;
 using Simply.ClipboardMonitor.Common;
+using static Simply.ClipboardMonitor.Common.ClipboardFormatConstants;
 using Simply.ClipboardMonitor.Models;
 using Simply.ClipboardMonitor.Services;
 using System.Collections.ObjectModel;
@@ -43,6 +44,41 @@ public partial class MainWindow : Window
         "Export Selected Format", "ExportSelectedFormat", typeof(MainWindow),
         new InputGestureCollection { new KeyGesture(Key.E, ModifierKeys.Control) });
 
+    // ── Grouped state ────────────────────────────────────────────────────────
+
+    private record struct TrayState
+    {
+        public System.Drawing.Icon? Icon          { get; set; }
+        public bool                 IconAdded     { get; set; }
+        public bool                 MinimizeToTray { get; set; }
+        public bool                 BalloonShown  { get; set; }
+        public bool                 IsExiting     { get; set; }
+    }
+
+    private record struct TextDecodingState
+    {
+        public byte[]?                      Bytes                { get; set; }
+        public bool                         SuppressChange       { get; set; }
+        public IReadOnlyList<EncodingItem>? EncodingItems        { get; set; }
+        public Encoding?                    AutoDetectedEncoding { get; set; }
+        public bool                         ManuallyChanged      { get; set; }
+    }
+
+    private record struct FormatSelectionState
+    {
+        public byte[]? Bytes      { get; set; }
+        public uint    FormatId   { get; set; }
+        public string  FormatName { get; set; }
+    }
+
+    private record struct ImagePanState
+    {
+        public bool   IsPanning        { get; set; }
+        public Point  StartMouse       { get; set; }
+        public double HorizontalOffset { get; set; }
+        public double VerticalOffset   { get; set; }
+    }
+
     // ── Injected services ──────────────────────────────────────────────────
     private readonly IClipboardReader         _clipboardReader;
     private readonly IClipboardWriter         _clipboardWriter;
@@ -65,36 +101,25 @@ public partial class MainWindow : Window
     private ListSortDirection _currentSortDirection = ListSortDirection.Ascending;
     private List<FormatColumnPreference> _storedColumnPreferences = [];
     private bool _isMonitoring;
-    private bool _isPanning;
-    private Point _panStartMouse;
-    private double _panStartHorizontalOffset;
-    private double _panStartVerticalOffset;
     // Tracks the path of the most recently loaded or saved .clipdb file.
     private string? _currentFilePath;
 
     // System tray state
     private const int WM_TRAYICON = 0x8001; // WM_APP + 1
-    private System.Drawing.Icon? _trayIcon;
-    private bool   _trayIconAdded;
-    private bool   _minimizeToSystemTray;
-    private bool   _trayBalloonShown;
-    private bool   _isExiting;
+    private TrayState _trayState;
 
     // Auto-start / start-minimized state
     private bool _startAtLogin;
     private bool _startMinimized;
 
     // Text-preview encoding state
-    private byte[]?                      _currentTextBytes;
-    private bool                         _suppressEncodingChange;
-    private IReadOnlyList<EncodingItem>? _encodingItems;
-    private Encoding?                    _currentAutoDetectedEncoding;
-    private bool                         _textEncodingManuallyChanged;
+    private TextDecodingState _textState;
 
-    // Export state — raw bytes and identity of the currently selected format
-    private byte[]? _currentFormatBytes;
-    private uint    _currentFormatId;
-    private string  _currentFormatName = string.Empty;
+    // Selected format state — raw bytes and identity of the currently selected format
+    private FormatSelectionState _formatState = new() { FormatName = string.Empty };
+
+    // Image pan state
+    private ImagePanState _panState;
 
     // History filtering state
     private string                    _historyFilter = string.Empty;
@@ -197,12 +222,12 @@ public partial class MainWindow : Window
             NativeMethods.AddClipboardFormatListener(source.Handle);
         }
 
-        if (_minimizeToSystemTray)
+        if (_trayState.MinimizeToTray)
             InitializeTrayIcon();
 
         if (_startMinimized)
         {
-            if (_minimizeToSystemTray)
+            if (_trayState.MinimizeToTray)
                 // Defer past the Show() call so the window is hidden before it appears.
                 Dispatcher.BeginInvoke(() => { Hide(); ShowTrayBalloonIfNeeded(); });
             else
@@ -229,7 +254,7 @@ public partial class MainWindow : Window
 
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
-        if (_minimizeToSystemTray && !_isExiting)
+        if (_trayState.MinimizeToTray && !_trayState.IsExiting)
         {
             e.Cancel = true;
             Hide();
@@ -260,13 +285,13 @@ public partial class MainWindow : Window
 
     private unsafe void InitializeTrayIcon()
     {
-        if (_trayIconAdded || _hwndSource == null)
+        if (_trayState.IconAdded || _hwndSource == null)
             return;
 
         using (var stream = this.GetType().Assembly.GetManifestResourceStream(this.GetType().Namespace + ".Resources.icon.ico"))
         {
             if (stream != null)
-                _trayIcon = new System.Drawing.Icon(stream);
+                _trayState.Icon = new System.Drawing.Icon(stream);
         }
 
         var nid = new NativeMethods.NOTIFYICONDATA
@@ -276,16 +301,16 @@ public partial class MainWindow : Window
             uID              = 1,
             uFlags           = NativeMethods.NIF_MESSAGE | NativeMethods.NIF_ICON | NativeMethods.NIF_TIP,
             uCallbackMessage = (uint)WM_TRAYICON,
-            hIcon            = (_trayIcon ?? System.Drawing.SystemIcons.Application).Handle,
+            hIcon            = (_trayState.Icon ?? System.Drawing.SystemIcons.Application).Handle,
         };
         CopyToFixed(nid.szTip, 128, "Simply.ClipboardMonitor");
         NativeMethods.Shell_NotifyIcon(NativeMethods.NIM_ADD, ref nid);
-        _trayIconAdded = true;
+        _trayState.IconAdded = true;
     }
 
     private unsafe void DisposeTrayIcon()
     {
-        if (!_trayIconAdded || _hwndSource == null)
+        if (!_trayState.IconAdded || _hwndSource == null)
             return;
 
         var nid = new NativeMethods.NOTIFYICONDATA
@@ -295,9 +320,25 @@ public partial class MainWindow : Window
             uID    = 1,
         };
         NativeMethods.Shell_NotifyIcon(NativeMethods.NIM_DELETE, ref nid);
-        _trayIconAdded  = false;
-        _trayIcon?.Dispose();
-        _trayIcon = null;
+        _trayState.IconAdded  = false;
+        _trayState.Icon?.Dispose();
+        _trayState.Icon = null;
+    }
+
+    private void ApplyTraySettings(bool newValue)
+    {
+        _trayState.MinimizeToTray = newValue;
+        if (_trayState.MinimizeToTray)
+            InitializeTrayIcon();
+        else
+            DisposeTrayIcon();
+    }
+
+    private void ApplyAutoStartPreference(bool newValue)
+    {
+        _startAtLogin = newValue;
+        AutoStartHelper.SetAutoStart(_startAtLogin);
+        AutoStartPill.Visibility = _startAtLogin ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private unsafe void ShowTrayContextMenu()
@@ -357,10 +398,10 @@ public partial class MainWindow : Window
 
     private unsafe void ShowTrayBalloonIfNeeded()
     {
-        if (_trayBalloonShown || !_trayIconAdded || _hwndSource == null)
+        if (_trayState.BalloonShown || !_trayState.IconAdded || _hwndSource == null)
             return;
 
-        _trayBalloonShown = true;
+        _trayState.BalloonShown = true;
         SavePreferences();
 
         var nid = new NativeMethods.NOTIFYICONDATA
@@ -378,7 +419,7 @@ public partial class MainWindow : Window
 
     private void ExitApplication()
     {
-        _isExiting = true;
+        _trayState.IsExiting = true;
         DisposeTrayIcon();
         Close();
     }
@@ -452,13 +493,11 @@ public partial class MainWindow : Window
     private void FormatListBox_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (FormatListBox.SelectedItem is not ClipboardFormatItem item)
-        {
             return;
-        }
 
-        _currentFormatId    = item.FormatId;
-        _currentFormatName  = item.Name;
-        _currentFormatBytes = null;
+        _formatState.FormatId    = item.FormatId;
+        _formatState.FormatName  = item.Name;
+        _formatState.Bytes = null;
 
         ContentTabControl.Visibility = Visibility.Visible;
         NoSelectionPanel.Visibility = Visibility.Collapsed;
@@ -470,26 +509,44 @@ public partial class MainWindow : Window
         if (!ImageTabItem.IsEnabled && ContentTabControl.SelectedItem == ImageTabItem)
             ContentTabControl.SelectedItem = HexTabItem;
 
-        byte[]? bytes = null;
-        string hexFailureMessage = "Clipboard data is unavailable.";
-        BitmapSource? imagePreview = null;
-        string imageFailureMessage = "Image preview unavailable for this format.";
+        if (!TryGetFormatBytes(item, out var bytes, out var hexFailureMessage))
+        {
+            SetHexPreviewUnavailable(hexFailureMessage);
+            return;
+        }
+
+        UpdateAllPreviews(item, bytes, hexFailureMessage);
+    }
+
+    /// <summary>
+    /// Resolves the raw byte content for <paramref name="item"/> from the active data source
+    /// (history snapshot, static snapshot, or live clipboard).
+    /// Returns <see langword="false"/> when the live clipboard could not be opened — the caller
+    /// should display <paramref name="hexFailureMessage"/> and return.
+    /// </summary>
+    private bool TryGetFormatBytes(ClipboardFormatItem item,
+        out byte[]? bytes, out string hexFailureMessage)
+    {
+        hexFailureMessage = "Clipboard data is unavailable.";
+        bytes = null;
 
         if (_historySnapshots != null)
         {
-            // History playback mode — bytes come from the in-memory snapshot dict.
+            // History playback mode.
             if (_historySnapshots.TryGetValue(item.Name, out var snapshot))
             {
                 bytes = snapshot.Data;
-                if (bytes == null && snapshot.HandleType != "none")
+                if (bytes == null && snapshot.HandleType != HandleTypes.None)
                     hexFailureMessage = "No data was captured for this format.";
             }
             else
             {
                 hexFailureMessage = "Format data not found in the selected history entry.";
             }
+            return true;
         }
-        else if (_staticSnapshot != null)
+
+        if (_staticSnapshot != null)
         {
             // Monitoring-off mode — bytes come from the snapshot taken when monitoring
             // was disabled (or on the last manual refresh), so the clipboard does not
@@ -497,36 +554,38 @@ public partial class MainWindow : Window
             if (_staticSnapshot.TryGetValue(item.Name, out var snapshot))
             {
                 bytes = snapshot.Data;
-                if (bytes == null && snapshot.HandleType != "none")
+                if (bytes == null && snapshot.HandleType != HandleTypes.None)
                     hexFailureMessage = "No data was captured for this format.";
             }
             else
             {
                 hexFailureMessage = "Format data not found in the static snapshot.";
             }
+            return true;
         }
-        else
+
+        // Live mode — read from the clipboard.
+        // Use local vars because out-params cannot be captured by lambdas.
+        byte[]? liveBytes  = null;
+        string  liveMsg    = string.Empty;
+        if (!ExecuteWithClipboard(IntPtr.Zero, () =>
         {
-            // Live mode — read from the clipboard.
-            if (!_clipboardReader.TryOpenClipboard(IntPtr.Zero))
-            {
-                SetHexPreviewUnavailable("Unable to open clipboard.");
-                return;
-            }
-
-            try
-            {
-                var handleType = _clipboardReader.GetHandleType(item.FormatId);
-                _clipboardReader.TryReadFormatBytes(item.FormatId, handleType,
-                    out bytes, out hexFailureMessage);
-            }
-            finally
-            {
-                _clipboardReader.CloseClipboard();
-            }
+            var handleType = _clipboardReader.GetHandleType(item.FormatId);
+            _clipboardReader.TryReadFormatBytes(item.FormatId, handleType, out liveBytes, out liveMsg);
+        }))
+        {
+            hexFailureMessage = "Unable to open clipboard.";
+            return false;
         }
 
-        _currentFormatBytes = bytes;
+        bytes             = liveBytes;
+        hexFailureMessage = liveMsg;
+        return true;
+    }
+
+    private void UpdateAllPreviews(ClipboardFormatItem item, byte[]? bytes, string hexFailureMessage)
+    {
+        _formatState.Bytes = bytes;
 
         if (bytes != null)
         {
@@ -534,14 +593,10 @@ public partial class MainWindow : Window
             UpdateTextPreview(item.FormatId, item.Name, bytes);
 
             if (_imagePreviews.TryCreatePreview(item.FormatId, item.Name, bytes,
-                    out imagePreview, out imageFailureMessage) && imagePreview != null)
-            {
+                    out var imagePreview, out var imageFailureMessage) && imagePreview != null)
                 SetImagePreview(imagePreview);
-            }
             else
-            {
                 SetImagePreviewUnavailable(imageFailureMessage);
-            }
         }
         else
         {
@@ -565,9 +620,9 @@ public partial class MainWindow : Window
 
     private void UpdateTextPreview(uint formatId, string formatName, byte[] bytes)
     {
-        _currentTextBytes            = bytes;
-        _currentAutoDetectedEncoding = null;
-        _textEncodingManuallyChanged = false;
+        _textState.Bytes            = bytes;
+        _textState.AutoDetectedEncoding = null;
+        _textState.ManuallyChanged = false;
 
         var result = _textDecoding.Decode(formatId, formatName, bytes);
 
@@ -577,7 +632,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        _currentAutoDetectedEncoding    = result.DetectedEncoding;
+        _textState.AutoDetectedEncoding    = result.DetectedEncoding;
         TextContentTextBox.Foreground   = SystemColors.WindowTextBrush;
         TextContentTextBox.Text         = result.Text ?? string.Empty;
         TextStatusTextBlock.Text        = _textDecoding.GetDecodedTextStats(result.Text ?? string.Empty);
@@ -586,30 +641,30 @@ public partial class MainWindow : Window
 
     private void PopulateEncodingComboBox(Encoding? preselect)
     {
-        _encodingItems ??= _textDecoding.GetAvailableEncodings();
+        _textState.EncodingItems ??= _textDecoding.GetAvailableEncodings();
 
         if (TextEncodingComboBox.ItemsSource == null)
-            TextEncodingComboBox.ItemsSource = _encodingItems;
+            TextEncodingComboBox.ItemsSource = _textState.EncodingItems;
 
         TextEncodingComboBox.IsEnabled = true;
 
-        _suppressEncodingChange = true;
+        _textState.SuppressChange = true;
         TextEncodingComboBox.SelectedItem = preselect != null
-            ? _encodingItems.FirstOrDefault(e => e.Encoding.CodePage == preselect.CodePage)
+            ? _textState.EncodingItems.FirstOrDefault(e => e.Encoding.CodePage == preselect.CodePage)
             : null;
-        _suppressEncodingChange = false;
+        _textState.SuppressChange = false;
     }
 
     private void TextEncodingComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (_suppressEncodingChange)
+        if (_textState.SuppressChange)
             return;
-        if (TextEncodingComboBox.SelectedItem is not EncodingItem item || _currentTextBytes == null)
+        if (TextEncodingComboBox.SelectedItem is not EncodingItem item || _textState.Bytes == null)
             return;
 
-        _textEncodingManuallyChanged = true;
+        _textState.ManuallyChanged = true;
 
-        var result = _textDecoding.DecodeWith(_currentTextBytes, item.Encoding);
+        var result = _textDecoding.DecodeWith(_textState.Bytes, item.Encoding);
 
         if (result.Success)
         {
@@ -649,9 +704,9 @@ public partial class MainWindow : Window
 
     private void SetTextPreviewUnavailable(string message)
     {
-        _currentTextBytes               = null;
-        _currentAutoDetectedEncoding    = null;
-        _textEncodingManuallyChanged    = false;
+        _textState.Bytes               = null;
+        _textState.AutoDetectedEncoding    = null;
+        _textState.ManuallyChanged    = false;
         TextStatusTextBlock.Text        = message;
         TextContentTextBox.Foreground   = SystemColors.WindowTextBrush;
         TextContentTextBox.Text         = string.Empty;
@@ -668,9 +723,9 @@ public partial class MainWindow : Window
         ContentTabControl.SelectedIndex = 0;
         ContentTabControl.Visibility = Visibility.Collapsed;
         NoSelectionPanel.Visibility  = Visibility.Visible;
-        _currentFormatBytes = null;
-        _currentFormatId    = 0;
-        _currentFormatName  = string.Empty;
+        _formatState.Bytes = null;
+        _formatState.FormatId    = 0;
+        _formatState.FormatName  = string.Empty;
     }
 
     private void ZoomSlider_OnValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -733,8 +788,10 @@ public partial class MainWindow : Window
 
         ImageScaleTransform.ScaleX = scale;
         ImageScaleTransform.ScaleY = scale;
-        ZoomTextBox.Text = $"{scale * 100:0}%";
+        ZoomTextBox.Text = FormatZoomPercentage(scale);
     }
+
+    private static string FormatZoomPercentage(double scale) => $"{scale * 100:0}%";
 
     private void SetZoomValue(double value)
     {
@@ -757,7 +814,7 @@ public partial class MainWindow : Window
         }
         else if (e.Key == Key.Escape)
         {
-            ZoomTextBox.Text = $"{_fitScale * ZoomSlider.Value * 100:0}%";
+            ZoomTextBox.Text = FormatZoomPercentage(_fitScale * ZoomSlider.Value);
             ZoomTextBox.SelectAll();
             e.Handled = true;
         }
@@ -772,7 +829,7 @@ public partial class MainWindow : Window
         }
         else
         {
-            ZoomTextBox.Text = $"{_fitScale * ZoomSlider.Value * 100:0}%";
+            ZoomTextBox.Text = FormatZoomPercentage(_fitScale * ZoomSlider.Value);
         }
     }
 
@@ -845,10 +902,10 @@ public partial class MainWindow : Window
             return;
         }
 
-        _isPanning = true;
-        _panStartMouse            = e.GetPosition(ImageScrollViewer);
-        _panStartHorizontalOffset = ImageScrollViewer.HorizontalOffset;
-        _panStartVerticalOffset   = ImageScrollViewer.VerticalOffset;
+        _panState.IsPanning = true;
+        _panState.StartMouse            = e.GetPosition(ImageScrollViewer);
+        _panState.HorizontalOffset = ImageScrollViewer.HorizontalOffset;
+        _panState.VerticalOffset   = ImageScrollViewer.VerticalOffset;
         ImageScrollViewer.Cursor  = Cursors.ScrollAll;
         Mouse.Capture(ImageScrollViewer);
         e.Handled = true;
@@ -856,12 +913,12 @@ public partial class MainWindow : Window
 
     private void ImageScrollViewer_MouseUp(object sender, MouseButtonEventArgs e)
     {
-        if (e.ChangedButton != MouseButton.Middle || !_isPanning)
+        if (e.ChangedButton != MouseButton.Middle || !_panState.IsPanning)
         {
             return;
         }
 
-        _isPanning = false;
+        _panState.IsPanning = false;
         Mouse.Capture(null);
         UpdateImageScrollViewerCursor();
         e.Handled = true;
@@ -869,11 +926,11 @@ public partial class MainWindow : Window
 
     private void ImageScrollViewer_MouseMove(object sender, MouseEventArgs e)
     {
-        if (_isPanning)
+        if (_panState.IsPanning)
         {
             var pos = e.GetPosition(ImageScrollViewer);
-            ImageScrollViewer.ScrollToHorizontalOffset(_panStartHorizontalOffset + (_panStartMouse.X - pos.X));
-            ImageScrollViewer.ScrollToVerticalOffset  (_panStartVerticalOffset   + (_panStartMouse.Y - pos.Y));
+            ImageScrollViewer.ScrollToHorizontalOffset(_panState.HorizontalOffset + (_panState.StartMouse.X - pos.X));
+            ImageScrollViewer.ScrollToVerticalOffset  (_panState.VerticalOffset   + (_panState.StartMouse.Y - pos.Y));
             return;
         }
 
@@ -882,7 +939,7 @@ public partial class MainWindow : Window
 
     private void ImageScrollViewer_MouseLeave(object sender, MouseEventArgs e)
     {
-        if (_isPanning)
+        if (_panState.IsPanning)
         {
             return;
         }
@@ -892,7 +949,7 @@ public partial class MainWindow : Window
 
     private void UpdateImageScrollViewerCursor()
     {
-        if (_isPanning)
+        if (_panState.IsPanning)
         {
             return;
         }
@@ -952,7 +1009,7 @@ public partial class MainWindow : Window
 
     private void ExportCommand_CanExecute(object sender, CanExecuteRoutedEventArgs e)
     {
-        e.CanExecute = _currentFormatBytes is { Length: > 0 };
+        e.CanExecute = _formatState.Bytes is { Length: > 0 };
     }
 
     private void ExportCommand_Executed(object sender, ExecutedRoutedEventArgs e)
@@ -1018,7 +1075,7 @@ public partial class MainWindow : Window
     {
         var dlg = new SettingsDialog(
             _historyMaxEntries, _historyMaxSizeMb, _historyMaintenance,
-            _minimizeToSystemTray, _startAtLogin, _startMinimized) { Owner = this };
+            _trayState.MinimizeToTray, _startAtLogin, _startMinimized) { Owner = this };
         var result = dlg.ShowDialog();
 
         if (dlg.HistoryWasCleared)
@@ -1036,21 +1093,11 @@ public partial class MainWindow : Window
             _historyMaxEntries = dlg.MaxEntries;
             _historyMaxSizeMb  = dlg.MaxSizeMb;
 
-            if (dlg.MinimizeToSystemTray != _minimizeToSystemTray)
-            {
-                _minimizeToSystemTray = dlg.MinimizeToSystemTray;
-                if (_minimizeToSystemTray)
-                    InitializeTrayIcon();
-                else
-                    DisposeTrayIcon();
-            }
+            if (dlg.MinimizeToSystemTray != _trayState.MinimizeToTray)
+                ApplyTraySettings(dlg.MinimizeToSystemTray);
 
             if (dlg.StartAtLogin != _startAtLogin)
-            {
-                _startAtLogin = dlg.StartAtLogin;
-                AutoStartHelper.SetAutoStart(_startAtLogin);
-                AutoStartPill.Visibility = _startAtLogin ? Visibility.Visible : Visibility.Collapsed;
-            }
+                ApplyAutoStartPreference(dlg.StartAtLogin);
 
             _startMinimized = dlg.StartMinimized;
 
@@ -1161,19 +1208,19 @@ public partial class MainWindow : Window
 
     private void MenuItemExportSelectedFormat_Click(object sender, RoutedEventArgs e)
     {
-        if (_currentFormatBytes is not { Length: > 0 })
+        if (_formatState.Bytes is not { Length: > 0 })
             return;
 
-        Encoding? manuallySelected = _textEncodingManuallyChanged
+        Encoding? manuallySelected = _textState.ManuallyChanged
             && ContentTabControl.SelectedItem == TextTabItem
             && TextEncodingComboBox.SelectedItem is EncodingItem { Encoding: var enc }
             ? enc : null;
 
         var ctx = new FormatExportContext(
-            Bytes:                    _currentFormatBytes,
-            FormatId:                 _currentFormatId,
-            FormatName:               _currentFormatName,
-            AutoDetectedEncoding:     _currentAutoDetectedEncoding,
+            Bytes:                    _formatState.Bytes,
+            FormatId:                 _formatState.FormatId,
+            FormatName:               _formatState.FormatName,
+            AutoDetectedEncoding:     _textState.AutoDetectedEncoding,
             ManuallySelectedEncoding: manuallySelected,
             ImagePreviewSource:       ImagePreview.Source as BitmapSource);
 
@@ -1185,7 +1232,7 @@ public partial class MainWindow : Window
         int defaultIndex = applicable.FindIndex(exp => exp.Extension == ".txt");
         if (defaultIndex < 0)
         {
-            var norm          = _currentFormatName.ToLowerInvariant();
+            var norm          = _formatState.FormatName.ToLowerInvariant();
             var preferredExt  = norm.Contains("jpeg") || norm.Contains("jpg") ? ".jpg" : ".png";
             defaultIndex      = applicable.FindIndex(exp => exp.Extension == preferredExt);
         }
@@ -1214,48 +1261,54 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"Failed to export:\n\n{ex.Message}",
-                "Export Failed", MessageBoxButton.OK, MessageBoxImage.Error);
+            ShowError($"Failed to export:\n\n{ex.Message}", "Export Failed");
         }
     }
 
-    // ── Save implementation ─────────────────────────────────────────────────
+    // ── Save / Load implementation ───────────────────────────────────────────
+
+    /// <summary>
+    /// Opens the clipboard, runs <paramref name="action"/>, then closes it.
+    /// Returns <see langword="false"/> (without running the action) if the clipboard
+    /// could not be opened.
+    /// </summary>
+    private bool ExecuteWithClipboard(IntPtr hwnd, Action action)
+    {
+        if (!_clipboardReader.TryOpenClipboard(hwnd))
+            return false;
+        try { action(); }
+        finally { _clipboardReader.CloseClipboard(); }
+        return true;
+    }
 
     private void SaveToFile(string path)
     {
         if (_formats.Count == 0)
         {
-            MessageBox.Show(this,
+            ShowInfo(
                 "There are no clipboard formats to save.\n\nCopy something to the clipboard first, then save.",
-                "Nothing to Save", MessageBoxButton.OK, MessageBoxImage.Information);
+                "Nothing to Save");
             return;
         }
 
-        if (!_clipboardReader.TryOpenClipboard(IntPtr.Zero))
+        var formats = new List<SavedClipboardFormat>(_formats.Count);
+        if (!ExecuteWithClipboard(IntPtr.Zero, () =>
         {
-            MessageBox.Show(this,
-                "Unable to open the clipboard for reading.\n\nClose any application that may be using the clipboard and try again.",
-                "Save Failed", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        List<SavedClipboardFormat> formats;
-        try
-        {
-            formats = new List<SavedClipboardFormat>(_formats.Count);
             foreach (var item in _formats)
             {
                 var handleType = _clipboardReader.GetHandleType(item.FormatId);
                 byte[]? data   = null;
-                if (handleType != "none")
+                if (handleType != HandleTypes.None)
                     _clipboardReader.TryReadFormatBytes(item.FormatId, handleType, out data, out _);
 
                 formats.Add(new SavedClipboardFormat(item.Ordinal, item.FormatId, item.Name, handleType, data));
             }
-        }
-        finally
+        }))
         {
-            _clipboardReader.CloseClipboard();
+            ShowWarning(
+                "Unable to open the clipboard for reading.\n\nClose any application that may be using the clipboard and try again.",
+                "Save Failed");
+            return;
         }
 
         _clipboardFiles.Save(path, formats);
@@ -1263,36 +1316,28 @@ public partial class MainWindow : Window
         UpdateFileStatusBar("Saved", path);
     }
 
-    // ── Load implementation ─────────────────────────────────────────────────
-
     private void LoadFromFile(string path)
     {
         var formats = _clipboardFiles.Load(path);
 
         if (formats.Count == 0)
         {
-            MessageBox.Show(this,
+            ShowInfo(
                 "The clipboard database is empty — no formats were stored in the file.",
-                "Nothing to Load", MessageBoxButton.OK, MessageBoxImage.Information);
+                "Nothing to Load");
             return;
         }
 
-        if (!_clipboardReader.TryOpenClipboard(_hwndSource?.Handle ?? IntPtr.Zero))
-        {
-            MessageBox.Show(this,
-                "Unable to open the clipboard for writing.\n\nClose any application that may be using the clipboard and try again.",
-                "Load Failed", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        try
+        if (!ExecuteWithClipboard(_hwndSource?.Handle ?? IntPtr.Zero, () =>
         {
             NativeMethods.EmptyClipboard();
             _clipboardWriter.RestoreFormats(formats);
-        }
-        finally
+        }))
         {
-            _clipboardReader.CloseClipboard();
+            ShowWarning(
+                "Unable to open the clipboard for writing.\n\nClose any application that may be using the clipboard and try again.",
+                "Load Failed");
+            return;
         }
 
         _currentFilePath = path;
@@ -1303,6 +1348,15 @@ public partial class MainWindow : Window
     }
 
     // ── Error reporting ─────────────────────────────────────────────────────
+
+    private void ShowInfo(string message, string title) =>
+        MessageBox.Show(this, message, title, MessageBoxButton.OK, MessageBoxImage.Information);
+
+    private void ShowWarning(string message, string title) =>
+        MessageBox.Show(this, message, title, MessageBoxButton.OK, MessageBoxImage.Warning);
+
+    private void ShowError(string message, string title) =>
+        MessageBox.Show(this, message, title, MessageBoxButton.OK, MessageBoxImage.Error);
 
     private void ShowFileOperationError(string operation, Exception ex)
     {
@@ -1331,7 +1385,7 @@ public partial class MainWindow : Window
             ? $"Failed to {operation} clipboard database:\n\n{message}\n\n{remedy}"
             : $"Failed to {operation} clipboard database:\n\n{message}";
 
-        MessageBox.Show(this, text, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        ShowError(text, "Error");
     }
 
     private void FormatListBox_OnColumnHeaderClick(object sender, RoutedEventArgs e)
@@ -1431,8 +1485,8 @@ public partial class MainWindow : Window
             _isTrackingHistory    = preferences.TrackHistory && _isMonitoring;
             _historyMaxEntries    = preferences.HistoryMaxEntries > 0 ? preferences.HistoryMaxEntries : DefaultHistoryMaxEntries;
             _historyMaxSizeMb     = preferences.HistoryMaxSizeMb  > 0 ? preferences.HistoryMaxSizeMb  : DefaultHistoryMaxSizeMb;
-            _minimizeToSystemTray = preferences.MinimizeToSystemTray;
-            _trayBalloonShown     = preferences.TrayBalloonShown;
+            _trayState.MinimizeToTray = preferences.MinimizeToSystemTray;
+            _trayState.BalloonShown     = preferences.TrayBalloonShown;
             _startMinimized       = preferences.StartMinimized;
         }
         catch
@@ -1462,8 +1516,8 @@ public partial class MainWindow : Window
             TrackHistory         = _isTrackingHistory,
             HistoryMaxEntries    = _historyMaxEntries,
             HistoryMaxSizeMb     = _historyMaxSizeMb,
-            MinimizeToSystemTray = _minimizeToSystemTray,
-            TrayBalloonShown     = _trayBalloonShown,
+            MinimizeToSystemTray = _trayState.MinimizeToTray,
+            TrayBalloonShown     = _trayState.BalloonShown,
             StartAtLogin         = _startAtLogin,
             StartMinimized       = _startMinimized,
         };
@@ -1769,19 +1823,9 @@ public partial class MainWindow : Window
         {
             if (!_history.IsDuplicateOfLastSession(snapshots))
             {
-                var formats      = snapshots.Select(s => (s.FormatId, s.FormatName)).ToList();
-                var pills        = _formatClassifier.ComputePills(formats);
-                var pillsText    = string.Join(" ", pills.Select(p => p.Label));
-                var textContents = snapshots
-                    .Select(s =>
-                    {
-                        if (s.Data == null) return (string?)null;
-                        var result = _textDecoding.Decode(s.FormatId, s.FormatName, s.Data);
-                        return result.Success ? result.Text : null;
-                    })
-                    .ToList();
+                var payload          = BuildSessionPayload(snapshots);
                 var maxDatabaseBytes = (long)_historyMaxSizeMb * 1024L * 1024L;
-                _history.AddSession(snapshots, textContents, pillsText, timestamp,
+                _history.AddSession(snapshots, payload.TextContents, payload.PillsText, timestamp,
                     _historyMaxEntries, maxDatabaseBytes);
             }
         }
@@ -1828,6 +1872,30 @@ public partial class MainWindow : Window
         }
     }
 
+    private record SessionPayload(
+        IReadOnlyList<(uint FormatId, string FormatName)> Formats,
+        IReadOnlyList<Models.FormatPill>                  Pills,
+        string                                            PillsText,
+        string                                            Tooltip,
+        IReadOnlyList<string?>                            TextContents);
+
+    private SessionPayload BuildSessionPayload(IReadOnlyList<FormatSnapshot> snapshots)
+    {
+        var formats      = snapshots.Select(s => (s.FormatId, s.FormatName)).ToList();
+        var pills        = _formatClassifier.ComputePills(formats);
+        var pillsText    = string.Join(" ", pills.Select(p => p.Label));
+        var tooltip      = _formatClassifier.ComputeTooltip(formats);
+        var textContents = snapshots
+            .Select(s =>
+            {
+                if (s.Data == null) return (string?)null;
+                var result = _textDecoding.Decode(s.FormatId, s.FormatName, s.Data);
+                return result.Success ? result.Text : null;
+            })
+            .ToList();
+        return new SessionPayload(formats, pills, pillsText, tooltip, textContents);
+    }
+
     /// <summary>
     /// Called by the channel consumer on a background thread.
     /// Compresses blobs, writes to history.db, then posts the new list entry to the UI.
@@ -1838,25 +1906,11 @@ public partial class MainWindow : Window
         {
             var maxDatabaseBytes = (long)_historyMaxSizeMb * 1024L * 1024L;
 
-            var formats = snapshots.Select(s => (s.FormatId, s.FormatName)).ToList();
-
-            // Build pills, tooltip, and pillsText on the background thread (services are thread-safe).
-            var pills      = _formatClassifier.ComputePills(formats);
-            var tooltip    = _formatClassifier.ComputeTooltip(formats);
-            var pillsText  = string.Join(" ", pills.Select(p => p.Label));
-
-            // Decode text content for each format so it is stored in the DB and becomes searchable.
-            var textContents = snapshots
-                .Select(s =>
-                {
-                    if (s.Data == null) return (string?)null;
-                    var result = _textDecoding.Decode(s.FormatId, s.FormatName, s.Data);
-                    return result.Success ? result.Text : null;
-                })
-                .ToList();
+            // Build pills, tooltip, pillsText, and decoded text content on the background thread.
+            var payload = BuildSessionPayload(snapshots);
 
             var (sessionId, trimmed) = _history.AddSession(
-                snapshots, textContents, pillsText, timestamp, _historyMaxEntries, maxDatabaseBytes);
+                snapshots, payload.TextContents, payload.PillsText, timestamp, _historyMaxEntries, maxDatabaseBytes);
 
             var formatsText = _history.BuildFormatsText(snapshots);
             var totalSize   = snapshots.Sum(s => s.OriginalSize);
@@ -1888,9 +1942,9 @@ public partial class MainWindow : Window
                         Timestamp      = timestamp,
                         FormatsText    = formatsText,
                         TotalSize      = totalSize,
-                        Formats        = formats,
-                        Pills          = pills,
-                        FormatsTooltip = tooltip,
+                        Formats        = payload.Formats,
+                        Pills          = payload.Pills,
+                        FormatsTooltip = payload.Tooltip,
                     };
                     _historyItems.Insert(0, entry);
                     HistoryListView.SelectedItem = entry;

@@ -38,12 +38,15 @@ internal sealed class FormatClassifierService : IFormatClassifier
 
         foreach (var (id, name) in formats)
         {
-            if      (IsImageFormat(id, name)) hasI = true;
-            else if (IsHtmlFormat(name))      hasH = true;
-            else if (IsRtfFormat(name))       hasR = true;
-            else if (IsTextFormat(id, name))  hasT = true;
-            else if (IsFileFormat(id))        hasF = true;
-            else                              hasO = true;
+            switch (ClassifyFormat(id, name))
+            {
+                case FormatCategory.Image: hasI = true; break;
+                case FormatCategory.Html:  hasH = true; break;
+                case FormatCategory.Rtf:   hasR = true; break;
+                case FormatCategory.Text:  hasT = true; break;
+                case FormatCategory.File:  hasF = true; break;
+                default:                   hasO = true; break;
+            }
         }
 
         var pills = new List<FormatPill>(6);
@@ -70,32 +73,29 @@ internal sealed class FormatClassifierService : IFormatClassifier
 
     // ── Private classification helpers ──────────────────────────────────────
 
-    private static bool IsHtmlFormat(string name) =>
-        name.Contains("html", StringComparison.OrdinalIgnoreCase);
+    private enum FormatCategory { Image, Html, Rtf, Text, File, Other }
 
-    private static bool IsRtfFormat(string name) =>
-        name.Contains("rtf",       StringComparison.OrdinalIgnoreCase) ||
-        name.Contains("rich text", StringComparison.OrdinalIgnoreCase);
-
-    private static bool IsTextFormat(uint id, string name)
+    private static FormatCategory ClassifyFormat(uint id, string name)
     {
-        // CF_TEXT, CF_OEMTEXT, CF_UNICODETEXT
-        if (id == CF_TEXT || id == CF_OEMTEXT || id == CF_UNICODETEXT) return true;
-        // Name-based: "text"-like, but not HTML or RTF (those have their own pills).
-        return name.Contains("text", StringComparison.OrdinalIgnoreCase) &&
-               !IsHtmlFormat(name) && !IsRtfFormat(name);
+        if (IsImageFormat(id, name))                                      return FormatCategory.Image;
+        if (name.Contains("html", StringComparison.OrdinalIgnoreCase))   return FormatCategory.Html;
+        if (name.Contains("rtf",       StringComparison.OrdinalIgnoreCase) ||
+            name.Contains("rich text", StringComparison.OrdinalIgnoreCase)) return FormatCategory.Rtf;
+        if (id == CF_TEXT || id == CF_OEMTEXT || id == CF_UNICODETEXT ||
+            name.Contains("text", StringComparison.OrdinalIgnoreCase))   return FormatCategory.Text;
+        if (id == CF_HDROP)                                               return FormatCategory.File;
+        return FormatCategory.Other;
     }
-
-    private static bool IsFileFormat(uint id) => id == CF_HDROP;
 
     /// <inheritdoc/>
-    public string? GetFormatPillLabel(uint formatId, string formatName)
-    {
-        if (IsImageFormat(formatId, formatName)) return "IMG";
-        if (IsHtmlFormat(formatName))            return "HTML";
-        if (IsRtfFormat(formatName))             return "RTF";
-        if (IsTextFormat(formatId, formatName))  return "TXT";
-        if (IsFileFormat(formatId))              return "FILE";
-        return null;
-    }
+    public string? GetFormatPillLabel(uint formatId, string formatName) =>
+        ClassifyFormat(formatId, formatName) switch
+        {
+            FormatCategory.Image => "IMG",
+            FormatCategory.Html  => "HTML",
+            FormatCategory.Rtf   => "RTF",
+            FormatCategory.Text  => "TXT",
+            FormatCategory.File  => "FILE",
+            _                    => null,
+        };
 }

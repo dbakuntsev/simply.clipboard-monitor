@@ -1,3 +1,5 @@
+using static Simply.ClipboardMonitor.Common.ClipboardFormatConstants;
+
 namespace Simply.ClipboardMonitor.Services.Impl.Strategies;
 
 /// <summary>
@@ -5,7 +7,7 @@ namespace Simply.ClipboardMonitor.Services.Impl.Strategies;
 /// </summary>
 internal sealed class NoneHandleReadStrategy : IHandleReadStrategy
 {
-    public string HandleType => "none";
+    public string HandleType => HandleTypes.None;
 
     public bool TryRead(uint formatId, out byte[]? data, out string failureMessage)
     {

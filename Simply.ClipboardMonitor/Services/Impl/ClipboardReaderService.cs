@@ -72,7 +72,7 @@ internal sealed class ClipboardReaderService : IClipboardReader
             {
                 var handleType   = GetHandleType(item.FormatId);
                 byte[]? data     = null;
-                if (handleType != "none")
+                if (handleType != HandleTypes.None)
                     TryReadFormatBytes(item.FormatId, handleType, out data, out _);
 
                 var originalSize = data?.LongLength
@@ -96,7 +96,7 @@ internal sealed class ClipboardReaderService : IClipboardReader
     {
         data = null;
         var strategy = _readStrategies.TryGetValue(handleType, out var s)
-            ? s : _readStrategies["hglobal"];
+            ? s : _readStrategies[HandleTypes.HGlobal];
         return strategy.TryRead(formatId, out data, out failureMessage);
     }
 
@@ -116,10 +116,10 @@ internal sealed class ClipboardReaderService : IClipboardReader
 
     /// <inheritdoc/>
     public string GetHandleType(uint formatId) =>
-        HBitmapFormats.Contains(formatId)         ? "hbitmap"      :
-        HEnhMetaFileFormats.Contains(formatId)    ? "henhmetafile" :
-        NonGlobalMemoryFormats.Contains(formatId) ? "none"         :
-        "hglobal";
+        HBitmapFormats.Contains(formatId)         ? HandleTypes.HBitmap      :
+        HEnhMetaFileFormats.Contains(formatId)    ? HandleTypes.HEnhMetaFile :
+        NonGlobalMemoryFormats.Contains(formatId) ? HandleTypes.None         :
+        HandleTypes.HGlobal;
 
     /// <inheritdoc/>
     public uint GetSequenceNumber() => NativeMethods.GetClipboardSequenceNumber();

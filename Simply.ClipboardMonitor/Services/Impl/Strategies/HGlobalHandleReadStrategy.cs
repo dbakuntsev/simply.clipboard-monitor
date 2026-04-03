@@ -1,4 +1,5 @@
 using Simply.ClipboardMonitor.Common;
+using static Simply.ClipboardMonitor.Common.ClipboardFormatConstants;
 using System.Runtime.InteropServices;
 
 namespace Simply.ClipboardMonitor.Services.Impl.Strategies;
@@ -10,7 +11,7 @@ internal sealed class HGlobalHandleReadStrategy : IHandleReadStrategy
 {
     private const int ERROR_NOT_LOCKED = 158;
 
-    public string HandleType => "hglobal";
+    public string HandleType => HandleTypes.HGlobal;
 
     public bool TryRead(uint formatId, out byte[]? data, out string failureMessage)
     {

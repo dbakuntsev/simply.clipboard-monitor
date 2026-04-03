@@ -1,4 +1,5 @@
 using Simply.ClipboardMonitor.Common;
+using static Simply.ClipboardMonitor.Common.ClipboardFormatConstants;
 using System.Runtime.InteropServices;
 
 namespace Simply.ClipboardMonitor.Services.Impl.Strategies;
@@ -9,7 +10,7 @@ namespace Simply.ClipboardMonitor.Services.Impl.Strategies;
 /// </summary>
 internal sealed class HBitmapHandleReadStrategy : IHandleReadStrategy
 {
-    public string HandleType => "hbitmap";
+    public string HandleType => HandleTypes.HBitmap;
 
     public bool TryRead(uint formatId, out byte[]? data, out string failureMessage)
     {

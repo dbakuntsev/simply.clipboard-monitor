@@ -62,6 +62,17 @@ internal static class ClipboardFormatConstants
             [CF_DSPENHMETAFILE] = "CF_DSPENHMETAFILE",
         };
 
+    // ── Handle-type name constants ──────────────────────────────────────────
+
+    /// <summary>String tokens used to identify a clipboard format's underlying handle type.</summary>
+    internal static class HandleTypes
+    {
+        internal const string HGlobal      = "hglobal";
+        internal const string HBitmap      = "hbitmap";
+        internal const string HEnhMetaFile = "henhmetafile";
+        internal const string None         = "none";
+    }
+
     // ── Handle-type classification sets ────────────────────────────────────
 
     /// <summary>CF_BITMAP / CF_DSPBITMAP: stored as HBITMAP, converted to DIB via GetDIBits.</summary>

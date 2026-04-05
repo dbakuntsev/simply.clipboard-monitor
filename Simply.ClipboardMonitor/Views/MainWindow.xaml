@@ -165,7 +165,9 @@
                               Background="Transparent"
                               ResizeBehavior="PreviousAndNext" />
 
-                <GroupBox Grid.Row="2" Header="Clipboard History">
+                <!-- Wrapper grid lets the count label overlay the GroupBox header line. -->
+                <Grid Grid.Row="2">
+                <GroupBox Header="Clipboard History">
                     <DockPanel>
                         <!-- Filter box with placeholder and inline clear button -->
                         <Grid DockPanel.Dock="Top" Margin="0,0,0,4">
@@ -263,6 +265,16 @@
                     </ListView>
                     </DockPanel>
                 </GroupBox>
+                <!-- Overlays the GroupBox header line; background erases the border behind the text. -->
+                <TextBlock x:Name="HistoryCountTextBlock"
+                           HorizontalAlignment="Right"
+                           VerticalAlignment="Top"
+                           Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}"
+                           Foreground="Gray"
+                           FontSize="11"
+                           Padding="3,0"
+                           Margin="0,3,12,0" />
+                </Grid>
             </Grid>
 
             <GroupBox Header="Selected Format Content" Grid.Column="2">

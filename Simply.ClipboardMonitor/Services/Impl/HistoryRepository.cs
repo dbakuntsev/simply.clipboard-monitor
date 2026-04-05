@@ -485,6 +485,21 @@ internal sealed class HistoryRepository : IHistoryRepository, IHistoryMaintenanc
     }
 
     /// <inheritdoc/>
+    public int GetSessionCount()
+    {
+        if (!File.Exists(DbPath))
+            return 0;
+        try
+        {
+            using var conn = OpenConnection(readOnly: true);
+            using var cmd  = conn.CreateCommand();
+            cmd.CommandText = "SELECT COUNT(*) FROM sessions";
+            return (int)(long)cmd.ExecuteScalar()!;
+        }
+        catch { return 0; }
+    }
+
+    /// <inheritdoc/>
     public bool IsDuplicateOfLastSession(IReadOnlyList<FormatSnapshot> snapshots)
     {
         if (!File.Exists(DbPath) || snapshots.Count == 0)

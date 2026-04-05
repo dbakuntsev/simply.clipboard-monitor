@@ -49,6 +49,12 @@ public interface IHistoryRepository
     string BuildFormatsText(IReadOnlyList<FormatSnapshot> snapshots);
 
     /// <summary>
+    /// Returns the total number of sessions in the database, ignoring any filter.
+    /// Returns 0 if the database does not exist.
+    /// </summary>
+    int GetSessionCount();
+
+    /// <summary>
     /// Returns <see langword="true"/> when the most recent history session has exactly
     /// the same ordered format set and the same per-format content hashes as
     /// <paramref name="snapshots"/>, meaning the current clipboard is a duplicate of

@@ -2004,11 +2004,22 @@ public partial class MainWindow : Window
             HistoryListView.SelectedItem = toSelect;
             if (toSelect != null)
                 HistoryListView.ScrollIntoView(toSelect);
+
+            UpdateHistoryCountLabel(_historyItems.Count, filter);
         }
         catch
         {
             // Silently ignore load failures.
         }
+    }
+
+    private void UpdateHistoryCountLabel(int filteredCount, string? filter)
+    {
+        int total = string.IsNullOrEmpty(filter) ? filteredCount : _history.GetSessionCount();
+        string n  = filteredCount == 1 ? "1 item" : $"{filteredCount} items";
+        HistoryCountTextBlock.Text = string.IsNullOrEmpty(filter) || filteredCount == total
+            ? n
+            : $"{n} ({total} total)";
     }
 
     private void ShowHistoryPanel()

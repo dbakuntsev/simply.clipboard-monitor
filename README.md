@@ -115,7 +115,20 @@ Each row in the history list shows:
   | **OTHER** | Other | Shown only when none of the above apply |
 - **Size** — sum of the original (uncompressed) byte lengths of all formats in the snapshot.
 
-Clicking a row retrieves that session's format snapshots for preview, exactly as they were at the time of capture.
+Clicking a row retrieves that session's format snapshots for preview, exactly as they were at the time of capture. If a clipboard format was already selected in the format list and the new session contains a format with the same name, that format is automatically re-selected so the preview refreshes immediately without extra clicks. Likewise, the active content preview tab (Hex / Text / Image) is preserved across row changes, allowing rapid inspection of the same data view across multiple history entries.
+
+The number of entries currently visible is shown in the **Clipboard History** group header (right-aligned). When a filter is active it reads *N items (M total)*, where *M* is the total unfiltered session count and *N* is the number of matched entries.
+
+### History entry actions
+
+Right-clicking a row in the history list opens a context menu:
+
+| Action | Description |
+|--------|-------------|
+| **Load into Clipboard** | Replaces the current clipboard with the full contents of the selected history entry. Available only when the entry differs from what is already on the clipboard; loading triggers a new history entry just like any other clipboard change. |
+| **Save As…** | Opens a **Save As** dialog and saves the selected history entry to a `.clipdb` file without touching the live clipboard. |
+| **Delete** | Permanently removes the selected entry. The format list reverts to the current live clipboard. |
+| **Clear All** | Deletes all history entries (equivalent to **File → Settings → Clear History**). The format list reverts to the current live clipboard. |
 
 ### Startup and toggle-on capture
 
@@ -125,7 +138,8 @@ When **Track History** is enabled — either because it was on at last exit and 
 
 A filter box sits at the top of the history panel. Typing text in narrows the list to sessions whose timestamp, format pill labels, format names, or decoded text content contains the search term.
 
-- The search is case-insensitive
+- The search is case-insensitive.
+- The group header count updates to show *N items (M total)* while a filter is active, making it easy to see how many sessions matched.
 - When a session is selected while a filter is active, format rows that match the filter term are highlighted with an orange left border.
   - Format rows are highlighted when the filter term appears in the **format name** or in the format's **pill label** (e.g. typing `img` highlights every image-compatible format, not only those whose registered name contains those letters).
 - Clearing the filter (typing or clicking **×**) reloads the full list and automatically selects the latest session.
@@ -286,7 +300,7 @@ Public domain service interfaces consumed by the main window and DI wiring.
 - `Services/IFormatClassifier.cs` — classify formats into colored pills and tooltip text for the history list
 - `Services/IFormatExporter.cs` — export a clipboard format to a file (one implementation per output type)
 - `Services/IHistoryMaintenance.cs` — database maintenance operations (schema migration, enforce size limits, clear history)
-- `Services/IHistoryRepository.cs` — clipboard history persistence (add session, load sessions with optional filter, load session formats, duplicate detection)
+- `Services/IHistoryRepository.cs` — clipboard history persistence (add session, load sessions with optional filter, load session formats, delete a single session, total session count, duplicate detection)
 - `Services/IImagePreviewService.cs` — create WPF `BitmapSource` previews from raw clipboard bytes
 - `Services/IPreferencesService.cs` — load and save user preferences
 - `Services/ITextDecodingService.cs` — decode raw bytes as text with auto-detection or manual encoding override
@@ -300,7 +314,7 @@ Concrete service implementations. All classes are `internal sealed`.
 - `Services/Impl/ClipboardReaderService.cs` — Win32 clipboard reading; dispatches per-handle-type work to injected `IHandleReadStrategy` implementations
 - `Services/Impl/ClipboardWriterService.cs` — Win32 clipboard writing; dispatches per-handle-type work to injected `IHandleWriteStrategy` implementations
 - `Services/Impl/FormatClassifierService.cs` — produces colored pills and tooltip text for the history list
-- `Services/Impl/HistoryRepository.cs` — history database (SQLite, ZStandard compression, SHA-256 deduplication, session trimming, schema migration, duplicate detection); implements both `IHistoryRepository` and `IHistoryMaintenance`
+- `Services/Impl/HistoryRepository.cs` — history database (SQLite, ZStandard compression, SHA-256 deduplication, session trimming, single-session deletion with orphan cleanup, schema migration, duplicate detection); implements both `IHistoryRepository` and `IHistoryMaintenance`
 - `Services/Impl/ImagePreviewService.cs` — decodes DIB, HBITMAP-derived, and encoded image formats into WPF `BitmapSource` objects
 - `Services/Impl/PreferencesService.cs` — JSON preferences persisted to `%LOCALAPPDATA%\Simply.ClipboardMonitor\preferences.json`
 - `Services/Impl/TextDecodingService.cs` — text decoding with format-aware priority chain and UTF-16 heuristics

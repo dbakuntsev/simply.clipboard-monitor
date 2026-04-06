@@ -1712,6 +1712,9 @@ public partial class MainWindow : Window
             return;
         }
 
+        var previousFormatName = (FormatListBox.SelectedItem as ClipboardFormatItem)?.Name;
+        var previousTab        = ContentTabControl.SelectedItem;
+
         _historySnapshots = snapshots.ToDictionary(s => s.FormatName, StringComparer.Ordinal);
         InitializePreviewState();
         _formats.Clear();
@@ -1728,6 +1731,19 @@ public partial class MainWindow : Window
                                  (_formatClassifier.GetFormatPillLabel(snap.FormatId, snap.FormatName)
                                       ?.Contains(filterTerm, StringComparison.OrdinalIgnoreCase) ?? false))
             });
+        }
+
+        if (previousFormatName != null)
+        {
+            var matching = _formats.FirstOrDefault(f => f.Name == previousFormatName);
+            if (matching != null)
+            {
+                // Restore the tab before triggering FormatListBox_OnSelectionChanged so it
+                // can fall back to Hex only when the restored tab is incompatible with the format.
+                if (previousTab != null)
+                    ContentTabControl.SelectedItem = previousTab;
+                FormatListBox.SelectedItem = matching;
+            }
         }
     }
 

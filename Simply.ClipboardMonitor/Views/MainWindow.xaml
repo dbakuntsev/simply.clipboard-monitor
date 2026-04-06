@@ -220,8 +220,25 @@
                         </Grid>
                         <ListView x:Name="HistoryListView"
                               SelectionChanged="HistoryListView_SelectionChanged"
+                              ContextMenuOpening="HistoryContextMenu_Opening"
                               ScrollViewer.HorizontalScrollBarVisibility="Auto"
                               ScrollViewer.VerticalScrollBarVisibility="Auto">
+                            <ListView.ContextMenu>
+                                <ContextMenu>
+                                    <MenuItem x:Name="HistoryMenuLoadIntoClipboard"
+                                              Header="Load into Clipboard"
+                                              Click="HistoryLoadIntoClipboard_Click" />
+                                    <MenuItem x:Name="HistoryMenuSaveAs"
+                                              Header="Save As..."
+                                              Click="HistorySaveAs_Click" />
+                                    <MenuItem x:Name="HistoryMenuDelete"
+                                              Header="Delete"
+                                              Click="HistoryDelete_Click" />
+                                    <Separator />
+                                    <MenuItem Header="Clear All"
+                                              Click="HistoryClearAll_Click" />
+                                </ContextMenu>
+                            </ListView.ContextMenu>
                         <ListView.View>
                             <GridView>
                                 <GridViewColumn Header="Date" Width="120"

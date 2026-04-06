@@ -500,6 +500,45 @@ internal sealed class HistoryRepository : IHistoryRepository, IHistoryMaintenanc
     }
 
     /// <inheritdoc/>
+    public void DeleteSession(long sessionId)
+    {
+        if (!File.Exists(DbPath))
+            return;
+
+        try
+        {
+            using var conn = OpenConnection(readOnly: false);
+            using (var tx = conn.BeginTransaction())
+            {
+                try
+                {
+                    using var delItems = conn.CreateCommand();
+                    delItems.CommandText = "DELETE FROM session_items WHERE session_id = @id";
+                    delItems.Parameters.AddWithValue("@id", sessionId);
+                    delItems.ExecuteNonQuery();
+
+                    using var delSession = conn.CreateCommand();
+                    delSession.CommandText = "DELETE FROM sessions WHERE id = @id";
+                    delSession.Parameters.AddWithValue("@id", sessionId);
+                    delSession.ExecuteNonQuery();
+
+                    DeleteOrphanedContent(conn);
+                    tx.Commit();
+                }
+                catch
+                {
+                    tx.Rollback();
+                    throw;
+                }
+            }
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    /// <inheritdoc/>
     public bool IsDuplicateOfLastSession(IReadOnlyList<FormatSnapshot> snapshots)
     {
         if (!File.Exists(DbPath) || snapshots.Count == 0)

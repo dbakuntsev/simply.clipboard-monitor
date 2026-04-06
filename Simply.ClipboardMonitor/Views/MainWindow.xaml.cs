@@ -2022,6 +2022,176 @@ public partial class MainWindow : Window
             : $"{n} ({total} total)";
     }
 
+    // ── History context menu ─────────────────────────────────────────────────
+
+    private void HistoryContextMenu_Opening(object sender, ContextMenuEventArgs e)
+    {
+        var hasSelection = HistoryListView.SelectedItem is HistoryItem;
+        HistoryMenuLoadIntoClipboard.IsEnabled = hasSelection
+            && _historySnapshots != null
+            && !IsHistorySessionCurrentClipboard(_historySnapshots);
+        HistoryMenuSaveAs.IsEnabled  = hasSelection;
+        HistoryMenuDelete.IsEnabled  = hasSelection;
+    }
+
+    /// <summary>
+    /// Returns true when the current clipboard content matches the given session snapshots
+    /// (same format names and identical per-format byte content).
+    /// </summary>
+    private bool IsHistorySessionCurrentClipboard(IReadOnlyDictionary<string, FormatSnapshot> sessionSnapshots)
+    {
+        var currentFormats = _clipboardReader.EnumerateFormats();
+        if (currentFormats.Count != sessionSnapshots.Count)
+            return false;
+
+        var currentSnapshots = _clipboardReader.CaptureAllFormats(currentFormats);
+        if (currentSnapshots.Count != sessionSnapshots.Count)
+            return false;
+
+        foreach (var cur in currentSnapshots)
+        {
+            if (!sessionSnapshots.TryGetValue(cur.FormatName, out var hist))
+                return false;
+            if ((cur.Data == null) != (hist.Data == null))
+                return false;
+            if (cur.Data != null && !cur.Data.AsSpan().SequenceEqual(hist.Data!.AsSpan()))
+                return false;
+        }
+        return true;
+    }
+
+    private void HistoryLoadIntoClipboard_Click(object sender, RoutedEventArgs e)
+    {
+        if (HistoryListView.SelectedItem is not HistoryItem entry)
+            return;
+
+        List<FormatSnapshot> snapshots;
+        try
+        {
+            snapshots = _history.LoadSessionFormats(entry.SessionId);
+        }
+        catch
+        {
+            return;
+        }
+
+        if (snapshots.Count == 0)
+            return;
+
+        var formats = snapshots
+            .Select(s => new SavedClipboardFormat(s.Ordinal, s.FormatId, s.FormatName, s.HandleType, s.Data))
+            .ToList();
+
+        if (!ExecuteWithClipboard(_hwndSource?.Handle ?? IntPtr.Zero, () =>
+        {
+            NativeMethods.EmptyClipboard();
+            _clipboardWriter.RestoreFormats(formats);
+        }))
+        {
+            ShowWarning(
+                "Unable to open the clipboard for writing.\n\nClose any application that may be using the clipboard and try again.",
+                "Load Failed");
+            return;
+        }
+
+        if (!_isMonitoring)
+            RefreshFormats();
+    }
+
+    private void HistorySaveAs_Click(object sender, RoutedEventArgs e)
+    {
+        if (HistoryListView.SelectedItem is not HistoryItem entry)
+            return;
+
+        var dlg = new SaveFileDialog
+        {
+            Title           = "Save Clipboard Database",
+            Filter          = "Clipboard Database (*.clipdb)|*.clipdb",
+            DefaultExt      = "clipdb",
+            OverwritePrompt = true,
+        };
+
+        if (dlg.ShowDialog(this) != true)
+            return;
+
+        try
+        {
+            var snapshots = _history.LoadSessionFormats(entry.SessionId);
+            if (snapshots.Count == 0)
+            {
+                ShowInfo("The selected history entry has no formats to save.", "Nothing to Save");
+                return;
+            }
+
+            var formats = snapshots
+                .Select(s => new SavedClipboardFormat(s.Ordinal, s.FormatId, s.FormatName, s.HandleType, s.Data))
+                .ToList();
+            _clipboardFiles.Save(dlg.FileName, formats);
+        }
+        catch (Exception ex)
+        {
+            ShowFileOperationError("save", ex);
+        }
+    }
+
+    private void HistoryDelete_Click(object sender, RoutedEventArgs e)
+    {
+        if (HistoryListView.SelectedItem is not HistoryItem entry)
+            return;
+
+        var confirm = MessageBox.Show(
+            this,
+            $"Delete the clipboard history entry from {entry.DateText}?",
+            "Confirm Delete",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+
+        if (confirm != MessageBoxResult.Yes)
+            return;
+
+        var sessionId    = entry.SessionId;
+        var activeFilter = string.IsNullOrWhiteSpace(_historyFilter) ? null : _historyFilter;
+
+        _historyChannel.Writer.TryWrite(() =>
+        {
+            try { _history.DeleteSession(sessionId); }
+            catch { /* ignore write failure */ }
+
+            Dispatcher.InvokeAsync(() =>
+            {
+                if (_historySnapshots != null)
+                    RefreshFormats();
+                LoadHistoryFromDatabase(activeFilter);
+            });
+        });
+    }
+
+    private void HistoryClearAll_Click(object sender, RoutedEventArgs e)
+    {
+        var confirm = MessageBox.Show(
+            this,
+            "Clear all clipboard history? This cannot be undone.",
+            "Confirm Clear All",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+
+        if (confirm != MessageBoxResult.Yes)
+            return;
+
+        _historyChannel.Writer.TryWrite(() =>
+        {
+            try { _historyMaintenance.ClearHistory(); }
+            catch { /* ignore write failure */ }
+
+            Dispatcher.InvokeAsync(() =>
+            {
+                if (_historySnapshots != null)
+                    RefreshFormats();
+                LoadHistoryFromDatabase();
+            });
+        });
+    }
+
     private void ShowHistoryPanel()
     {
         LeftPanelGrid.RowDefinitions[1].Height = new GridLength(5);

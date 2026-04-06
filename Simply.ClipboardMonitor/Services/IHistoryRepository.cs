@@ -55,6 +55,13 @@ public interface IHistoryRepository
     int GetSessionCount();
 
     /// <summary>
+    /// Deletes the session with the given ID, its items, and any content blobs that are
+    /// no longer referenced by any other session.
+    /// No-op when the database does not exist.
+    /// </summary>
+    void DeleteSession(long sessionId);
+
+    /// <summary>
     /// Returns <see langword="true"/> when the most recent history session has exactly
     /// the same ordered format set and the same per-format content hashes as
     /// <paramref name="snapshots"/>, meaning the current clipboard is a duplicate of

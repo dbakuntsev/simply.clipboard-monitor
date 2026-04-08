@@ -7,6 +7,7 @@ public class DisplayHelperTests
 {
     private const long OneKiB = 1024;
     private const long OneAndAHalfKiB = OneKiB * 3 / 2;
+    private const long OneEightKiB = OneKiB / 8;
 
     [Fact]
     public void FormatFileSize_Zero_ReturnsNotCreatedYet()
@@ -41,18 +42,34 @@ public class DisplayHelperTests
 
     // Verifies that rounding is correct (not truncating) across all three scaled ranges.
     [Theory]
-    [InlineData((OneAndAHalfKiB - 1),                   "1.5 KB")]  // 1.5 × 1 KiB
-    [InlineData((OneAndAHalfKiB - 1) * OneKiB,          "1.5 MB")]  // 1.5 × 1 MiB
-    [InlineData((OneAndAHalfKiB - 1) * OneKiB * OneKiB, "1.5 GB")]  // 1.5 × 1 GiB
+    [InlineData((OneAndAHalfKiB - 1),                   "1.5 KB")]
+    [InlineData((OneAndAHalfKiB - 1) * OneKiB,          "1.5 MB")]
+    [InlineData((OneAndAHalfKiB - 1) * OneKiB * OneKiB, "1.5 GB")]
     public void FormatFileSize_HalfwayPointMinusOne_RoundsToOneDecimal(long bytes, string expected)
         => Assert.Equal(expected, DisplayHelper.FormatFileSize(bytes));
 
     // Verifies that rounding is correct (not truncating) across all three scaled ranges.
     [Theory]
-    [InlineData((OneAndAHalfKiB + 1),                   "1.5 KB")]  // 1.5 × 1 KiB
-    [InlineData((OneAndAHalfKiB + 1) * OneKiB,          "1.5 MB")]  // 1.5 × 1 MiB
-    [InlineData((OneAndAHalfKiB + 1) * OneKiB * OneKiB, "1.5 GB")]  // 1.5 × 1 GiB
+    [InlineData((OneAndAHalfKiB + 1),                   "1.5 KB")]
+    [InlineData((OneAndAHalfKiB + 1) * OneKiB,          "1.5 MB")]
+    [InlineData((OneAndAHalfKiB + 1) * OneKiB * OneKiB, "1.5 GB")]
     public void FormatFileSize_HalfwayPointPlusOne_RoundsToOneDecimal(long bytes, string expected)
+        => Assert.Equal(expected, DisplayHelper.FormatFileSize(bytes));
+
+    // Verifies that rounding up is correct (not truncating) across all three scaled ranges.
+    [Theory]
+    [InlineData((OneAndAHalfKiB + OneEightKiB),                   "1.6 KB")]
+    [InlineData((OneAndAHalfKiB + OneEightKiB) * OneKiB,          "1.6 MB")]
+    [InlineData((OneAndAHalfKiB + OneEightKiB) * OneKiB * OneKiB, "1.6 GB")]
+    public void FormatFileSize_FiveEightsPoint_RoundsToOneDecimal(long bytes, string expected)
+        => Assert.Equal(expected, DisplayHelper.FormatFileSize(bytes));
+
+    // Verifies that rounding down is correct (not truncating) across all three scaled ranges.
+    [Theory]
+    [InlineData((OneAndAHalfKiB - OneEightKiB),                   "1.4 KB")]
+    [InlineData((OneAndAHalfKiB - OneEightKiB) * OneKiB,          "1.4 MB")]
+    [InlineData((OneAndAHalfKiB - OneEightKiB) * OneKiB * OneKiB, "1.4 GB")]
+    public void FormatFileSize_ThreeEightsPoint_RoundsToOneDecimal1(long bytes, string expected)
         => Assert.Equal(expected, DisplayHelper.FormatFileSize(bytes));
 
     [Fact]

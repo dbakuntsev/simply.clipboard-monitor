@@ -44,7 +44,15 @@ public class DisplayHelperTests
     [InlineData((OneAndAHalfKiB - 1),                   "1.5 KB")]  // 1.5 × 1 KiB
     [InlineData((OneAndAHalfKiB - 1) * OneKiB,          "1.5 MB")]  // 1.5 × 1 MiB
     [InlineData((OneAndAHalfKiB - 1) * OneKiB * OneKiB, "1.5 GB")]  // 1.5 × 1 GiB
-    public void FormatFileSize_HalfwayPointLessOne_RoundsToOneDecimal(long bytes, string expected)
+    public void FormatFileSize_HalfwayPointMinusOne_RoundsToOneDecimal(long bytes, string expected)
+        => Assert.Equal(expected, DisplayHelper.FormatFileSize(bytes));
+
+    // Verifies that rounding is correct (not truncating) across all three scaled ranges.
+    [Theory]
+    [InlineData((OneAndAHalfKiB + 1),                   "1.5 KB")]  // 1.5 × 1 KiB
+    [InlineData((OneAndAHalfKiB + 1) * OneKiB,          "1.5 MB")]  // 1.5 × 1 MiB
+    [InlineData((OneAndAHalfKiB + 1) * OneKiB * OneKiB, "1.5 GB")]  // 1.5 × 1 GiB
+    public void FormatFileSize_HalfwayPointPlusOne_RoundsToOneDecimal(long bytes, string expected)
         => Assert.Equal(expected, DisplayHelper.FormatFileSize(bytes));
 
     [Fact]

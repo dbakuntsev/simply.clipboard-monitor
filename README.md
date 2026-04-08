@@ -255,7 +255,7 @@ A **Save As** dialog opens with the file name pre-set to `clipboard-{format_name
 - **`CF_PALETTE` (HPALETTE)**: palette objects cannot be read as a raw byte stream. The format appears in the list but has no hex, image, or save/restore support.
 - **`CF_ENHMETAFILE` / `CF_DSPENHMETAFILE`** (HENHMETAFILE): the raw EMF byte stream is available in the hex viewer and is saved/restored correctly, but no image rendering is provided — WPF has no native EMF decoder and rendering via GDI is outside the current scope.
 - **`CF_METAFILEPICT` / `CF_DSPMETAFILEPICT`** (HGLOBAL wrapping a `METAFILEPICT` struct): the hex viewer shows the raw struct bytes; the embedded `HMETAFILE` handle value inside is not dereferenced and the metafile data is not separately captured.
-- There are no automated tests in this repository currently.
+- There are no image-rendering tests for `CF_ENHMETAFILE` / `CF_DSPENHMETAFILE` and no UI-level tests.
 
 ## Tech Stack
 
@@ -272,6 +272,7 @@ A **Save As** dialog opens with the file name pre-set to `clipboard-{format_name
 
 - `Simply.ClipboardMonitor.sln` — solution
 - `Simply.ClipboardMonitor/Simply.ClipboardMonitor.csproj` — app project
+- `Simply.ClipboardMonitor.Tests/Simply.ClipboardMonitor.Tests.csproj` — xUnit test project
 - `Simply.ClipboardMonitor/App.xaml` / `App.xaml.cs` — WPF application entry point; builds the DI container and registers all services, strategies, and exporters
 - `Simply.ClipboardMonitor/Views/MainWindow.xaml` / `MainWindow.xaml.cs` — main window (clipboard listener, format list, previews, history, export, sort, preferences)
 - `Simply.ClipboardMonitor/Views/AboutDialog.xaml` / `AboutDialog.xaml.cs` — About dialog
@@ -345,6 +346,28 @@ Internal utility types with no domain logic.
 - `Common/NativeMethods.cs` — Win32 P/Invoke declarations (`user32.dll`, `kernel32.dll`, `gdi32.dll`, `shell32.dll`)
 - `Common/ShellHelper.cs` — opens a URL in the default browser via `ShellExecute`
 - `Common/Win32Structs.cs` — Win32 GDI structs used by clipboard read/write (`BITMAP`, `BITMAPINFOHEADER`)
+
+## Tests
+
+The solution includes an xUnit test project (`Simply.ClipboardMonitor.Tests`) targeting `net8.0-windows`. Run tests with:
+
+```
+dotnet test
+```
+
+The test suite covers:
+
+| File | What is tested |
+|------|---------------|
+| `TextDecodingServiceTests` | `IsTextCompatible`, `Decode` (all format ID branches and all auto-detection paths — UTF-8 BOM, UTF-16 LE/BE BOM, heuristic, fallback), `DecodeWith`, `GetDecodedTextStats` (including `\r`, `\n`, `\r\n` variants) |
+| `FormatClassifierServiceTests` | `GetFormatPillLabel` for every category and the null/OTHER fallback; `ComputePills` including the "OTHER is suppressed when any known category matches" rule; `ComputeTooltip` singular/plural/empty |
+| `DisplayHelperTests` | Zero, byte, KB, MB, GB boundary values; correct decimal rounding at 1.5× scale in all three ranges |
+| `HexRowCollectionTests` | Row count (empty/exact/partial), offset formatting, hex pair content and padding, ASCII printable/non-printable mapping, out-of-range indexer, row caching, enumeration |
+| `HistoryRepositoryTests` | `GetSessionCount`, `AddSession` with and without trim, `LoadSessions` (order, filter match/no-match), `LoadSessionFormats` with byte round-trip, `DeleteSession` (count, format removal, other sessions unaffected, shared blob preservation), `ClearHistory`, `IsDuplicateOfLastSession`, `EnforceLimits` (verifies the *oldest* sessions are removed), `BuildFormatsText` (name and truncation) |
+
+`HistoryRepositoryTests` are integration tests that write to a temporary SQLite file created per test class instance; each directory is deleted in `Dispose`.
+
+`FormatClassifierServiceTests` run on an STA thread (`[StaFact]` from `Xunit.StaFact`) because `FormatClassifierService` creates frozen `SolidColorBrush` objects in its static initialiser.
 
 ## Build and Run
 

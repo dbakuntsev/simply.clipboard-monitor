@@ -17,11 +17,21 @@ internal sealed class HistoryRepository : IHistoryRepository, IHistoryMaintenanc
 {
     private const int ZstdMaxLevel = 22;
 
-    private string DbPath =>
+    private readonly string? _dbPathOverride;
+
+    private string DbPath => _dbPathOverride ??
         Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "Simply.ClipboardMonitor",
             "history.db");
+
+    // Parameterless constructor used by the DI container.
+    internal HistoryRepository() { }
+
+    private HistoryRepository(string dbPathOverride) { _dbPathOverride = dbPathOverride; }
+
+    /// <summary>Creates an instance backed by a specific database file path, for use in tests.</summary>
+    internal static HistoryRepository CreateForTesting(string dbPath) => new(dbPath);
 
     // ── Public API ──────────────────────────────────────────────────────────
 

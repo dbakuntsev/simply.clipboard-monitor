@@ -72,6 +72,22 @@
                   Content="Start minimized"
                   Margin="0,0,0,0" />
 
+        <Separator Margin="0,16,0,0" />
+
+        <TextBlock Text="Data Directory"
+                   FontWeight="SemiBold"
+                   Margin="0,16,0,8" />
+
+        <TextBlock Text="Directory for persistent preferences, history and error logs:"
+                   TextWrapping="Wrap"
+                   Margin="0,0,0,4" />
+
+        <TextBlock TextWrapping="Wrap">
+            <Hyperlink x:Name="DataDirectoryLink" Click="DataDirectoryLink_Click">
+                <Run x:Name="DataDirectoryPathRun" />
+            </Hyperlink>
+        </TextBlock>
+
         <StackPanel Orientation="Horizontal"
                     HorizontalAlignment="Right"
                     Margin="0,20,0,0">

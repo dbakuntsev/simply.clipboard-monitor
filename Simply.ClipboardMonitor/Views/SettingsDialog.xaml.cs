@@ -1,5 +1,7 @@
 using Simply.ClipboardMonitor.Common;
 using Simply.ClipboardMonitor.Services;
+using System.Diagnostics;
+using System.IO;
 using System.Windows;
 
 namespace Simply.ClipboardMonitor;
@@ -7,6 +9,10 @@ namespace Simply.ClipboardMonitor;
 public partial class SettingsDialog : Window
 {
     private readonly IHistoryMaintenance _history;
+
+    private static readonly string DataDirectory = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "Simply.ClipboardMonitor");
 
     /// <summary>Validated maximum entry count; meaningful only when DialogResult is true.</summary>
     public int MaxEntries { get; private set; }
@@ -37,6 +43,7 @@ public partial class SettingsDialog : Window
         MinimizeToTrayCheckBox.IsChecked  = minimizeToSystemTray;
         StartAtLoginCheckBox.IsChecked    = startAtLogin;
         StartMinimizedCheckBox.IsChecked  = startMinimized;
+        DataDirectoryPathRun.Text         = DataDirectory;
         RefreshDbSizeDisplay();
     }
 
@@ -50,6 +57,15 @@ public partial class SettingsDialog : Window
         _history.ClearHistory();
         HistoryWasCleared = true;
         RefreshDbSizeDisplay();
+    }
+
+    private void DataDirectoryLink_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo("explorer.exe", DataDirectory) { UseShellExecute = true });
+        }
+        catch { /* best effort */ }
     }
 
     private bool ValidatePositiveInt(System.Windows.Controls.TextBox box, string fieldName, out int value)

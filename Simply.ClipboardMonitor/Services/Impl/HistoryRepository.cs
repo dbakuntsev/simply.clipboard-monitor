@@ -1,4 +1,5 @@
 using Microsoft.Data.Sqlite;
+using Simply.ClipboardMonitor.Common;
 using Simply.ClipboardMonitor.Models;
 using Simply.ClipboardMonitor.Services;
 using System.IO;
@@ -26,7 +27,7 @@ internal sealed class HistoryRepository : IHistoryRepository, IHistoryMaintenanc
             "history.db");
 
     // Parameterless constructor used by the DI container.
-    internal HistoryRepository() { }
+    public HistoryRepository() { }
 
     private HistoryRepository(string dbPathOverride) { _dbPathOverride = dbPathOverride; }
 
@@ -103,6 +104,11 @@ internal sealed class HistoryRepository : IHistoryRepository, IHistoryMaintenanc
 
             return (sessionId, trimmed);
         }
+        catch (Exception ex) when (ex is not FileNotFoundException and not DirectoryNotFoundException)
+        {
+            ErrorLogger.Log(ex);
+            return default;
+        }
         finally
         {
             SqliteConnection.ClearAllPools();
@@ -140,6 +146,11 @@ internal sealed class HistoryRepository : IHistoryRepository, IHistoryMaintenanc
             }
             return removed;
         }
+        catch (Exception ex) when (ex is not FileNotFoundException and not DirectoryNotFoundException)
+        {
+            ErrorLogger.Log(ex);
+            return false;
+        }
         finally
         {
             SqliteConnection.ClearAllPools();
@@ -160,6 +171,10 @@ internal sealed class HistoryRepository : IHistoryRepository, IHistoryMaintenanc
         {
             using var conn = OpenConnection(readOnly: false);
             CreateSchema(conn);
+        }
+        catch (Exception ex) when (ex is not FileNotFoundException and not DirectoryNotFoundException)
+        {
+            ErrorLogger.Log(ex);
         }
         finally
         {
@@ -195,6 +210,10 @@ internal sealed class HistoryRepository : IHistoryRepository, IHistoryMaintenanc
                 cmd.CommandText = "VACUUM";
                 cmd.ExecuteNonQuery();
             }
+        }
+        catch (Exception ex) when (ex is not FileNotFoundException and not DirectoryNotFoundException)
+        {
+            ErrorLogger.Log(ex);
         }
         finally
         {
@@ -277,6 +296,11 @@ internal sealed class HistoryRepository : IHistoryRepository, IHistoryMaintenanc
 
             return result;
         }
+        catch (Exception ex) when (ex is not FileNotFoundException and not DirectoryNotFoundException)
+        {
+            ErrorLogger.Log(ex);
+            return [];
+        }
         finally
         {
             SqliteConnection.ClearAllPools();
@@ -332,6 +356,11 @@ internal sealed class HistoryRepository : IHistoryRepository, IHistoryMaintenanc
             }
 
             return result;
+        }
+        catch (Exception ex) when (ex is not FileNotFoundException and not DirectoryNotFoundException)
+        {
+            ErrorLogger.Log(ex);
+            return [];
         }
         finally
         {
@@ -506,7 +535,11 @@ internal sealed class HistoryRepository : IHistoryRepository, IHistoryMaintenanc
             cmd.CommandText = "SELECT COUNT(*) FROM sessions";
             return (int)(long)cmd.ExecuteScalar()!;
         }
-        catch { return 0; }
+        catch (Exception ex)
+        {
+            ErrorLogger.Log(ex);
+            return 0;
+        }
     }
 
     /// <inheritdoc/>
@@ -541,6 +574,10 @@ internal sealed class HistoryRepository : IHistoryRepository, IHistoryMaintenanc
                     throw;
                 }
             }
+        }
+        catch (Exception ex) when (ex is not FileNotFoundException and not DirectoryNotFoundException)
+        {
+            ErrorLogger.Log(ex);
         }
         finally
         {
@@ -591,6 +628,11 @@ internal sealed class HistoryRepository : IHistoryRepository, IHistoryMaintenanc
             }
 
             return true;
+        }
+        catch (Exception ex) when (ex is not FileNotFoundException and not DirectoryNotFoundException)
+        {
+            ErrorLogger.Log(ex);
+            return false;
         }
         finally
         {

@@ -1,3 +1,4 @@
+using Simply.ClipboardMonitor.Common;
 using Simply.ClipboardMonitor.Models;
 using System.IO;
 using System.Text.Json;
@@ -27,8 +28,10 @@ internal sealed class PreferencesService : IPreferencesService
             var preferences = JsonSerializer.Deserialize<UserPreferences>(json);
             return preferences ?? new UserPreferences();
         }
-        catch
+        catch (Exception ex)
         {
+            if (ex is not FileNotFoundException and not DirectoryNotFoundException)
+                ErrorLogger.Log(ex);
             return new UserPreferences();
         }
     }
@@ -47,9 +50,10 @@ internal sealed class PreferencesService : IPreferencesService
                 new JsonSerializerOptions { WriteIndented = true });
             File.WriteAllText(path, json);
         }
-        catch
+        catch (Exception ex)
         {
-            // Ignore preference persistence failures.
+            if (ex is not FileNotFoundException and not DirectoryNotFoundException)
+                ErrorLogger.Log(ex);
         }
     }
 

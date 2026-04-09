@@ -1,8 +1,10 @@
 using Microsoft.Extensions.DependencyInjection;
+using Simply.ClipboardMonitor.Common;
 using Simply.ClipboardMonitor.Services;
 using Simply.ClipboardMonitor.Services.Impl;
 using Simply.ClipboardMonitor.Services.Impl.Strategies;
 using System.Windows;
+using System.Windows.Threading;
 
 namespace Simply.ClipboardMonitor;
 
@@ -18,6 +20,10 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
+        DispatcherUnhandledException              += OnDispatcherUnhandledException;
+        AppDomain.CurrentDomain.UnhandledException += OnDomainUnhandledException;
+        TaskScheduler.UnobservedTaskException      += OnUnobservedTaskException;
+
         var services = new ServiceCollection();
         RegisterServices(services);
         _serviceProvider = services.BuildServiceProvider();
@@ -30,6 +36,41 @@ public partial class App : Application
     {
         _serviceProvider?.Dispose();
         base.OnExit(e);
+    }
+
+    // ── Unhandled exception handlers ─────────────────────────────────────────
+
+    private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
+    {
+        ErrorLogger.Log(e.Exception);
+        e.Handled = true;
+        ShowCrashDialog();
+        Shutdown(1);
+    }
+
+    private void OnDomainUnhandledException(object sender, UnhandledExceptionEventArgs e)
+    {
+        if (e.ExceptionObject is Exception ex)
+            ErrorLogger.Log(ex);
+
+        if (e.IsTerminating)
+        {
+            try { Dispatcher.Invoke(ShowCrashDialog); }
+            catch { /* best effort */ }
+        }
+    }
+
+    private static void OnUnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
+    {
+        ErrorLogger.Log(e.Exception);
+        e.SetObserved(); // prevent process termination; app continues running
+    }
+
+    private void ShowCrashDialog()
+    {
+        var logPath = ErrorLogger.CurrentLogFilePath;
+        if (logPath is not null)
+            new CrashDialog(logPath).ShowDialog();
     }
 
     // ── Service registrations ────────────────────────────────────────────────

@@ -1,4 +1,5 @@
 using Microsoft.Data.Sqlite;
+using Simply.ClipboardMonitor.Common;
 using Simply.ClipboardMonitor.Models;
 using Simply.ClipboardMonitor.Services;
 using System.IO;
@@ -64,6 +65,11 @@ internal sealed class ClipboardFileRepository : IClipboardFileRepository
                 throw;
             }
         }
+        catch (Exception ex) when (ex is not FileNotFoundException and not DirectoryNotFoundException)
+        {
+            ErrorLogger.Log(ex);
+            throw;
+        }
         finally
         {
             SqliteConnection.ClearAllPools();
@@ -105,6 +111,11 @@ internal sealed class ClipboardFileRepository : IClipboardFileRepository
             }
 
             return result;
+        }
+        catch (Exception ex) when (ex is not FileNotFoundException and not DirectoryNotFoundException)
+        {
+            ErrorLogger.Log(ex);
+            throw;
         }
         finally
         {

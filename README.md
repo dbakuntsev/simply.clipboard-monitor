@@ -206,6 +206,21 @@ When **Start minimized** is ON, the application window does not appear on screen
 
 The **Minimize to System Tray** setting is saved in `%LOCALAPPDATA%\Simply.ClipboardMonitor\preferences.json` along with a flag that tracks whether the first-minimize balloon notification has been shown (so it appears only once ever). **Start at login** state is read directly from the registry on each launch so the UI always reflects the actual system state.
 
+## Error Logs
+
+When the application encounters an unhandled exception, it shows a crash dialog before closing. The dialog displays the full path to the error log file as a clickable link that opens the file directly.
+
+Error logs are written to `%LOCALAPPDATA%\Simply.ClipboardMonitor\` and named `error_YYYY-MM-DD.txt`. If the file with today's date does not exist, it means that no loggable errors occurred today. The three most recent log files are kept; older files are deleted automatically.
+
+In addition to unhandled exceptions, the following errors are silently logged without interrupting the application:
+
+- Errors reading or writing the preferences file — unless the file is simply absent.
+- Errors reading or writing the history database — unless the database file is simply absent.
+- Errors reading or writing `.clipdb` snapshot files — unless the file is simply absent.
+- Unobserved background task exceptions.
+
+The data directory is also accessible from **File → Settings**, which has a link at the bottom of the dialog that opens Windows Explorer at `%LOCALAPPDATA%\Simply.ClipboardMonitor\`.
+
 ## Preview Behavior
 
 ### Hex
@@ -276,7 +291,8 @@ A **Save As** dialog opens with the file name pre-set to `clipboard-{format_name
 - `Simply.ClipboardMonitor/App.xaml` / `App.xaml.cs` — WPF application entry point; builds the DI container and registers all services, strategies, and exporters
 - `Simply.ClipboardMonitor/Views/MainWindow.xaml` / `MainWindow.xaml.cs` — main window (clipboard listener, format list, previews, history, export, sort, preferences)
 - `Simply.ClipboardMonitor/Views/AboutDialog.xaml` / `AboutDialog.xaml.cs` — About dialog
-- `Simply.ClipboardMonitor/Views/SettingsDialog.xaml` / `SettingsDialog.xaml.cs` — Settings dialog (history limits, database size display, clear history, minimize-to-tray, start-at-login, start-minimized toggles)
+- `Simply.ClipboardMonitor/Views/SettingsDialog.xaml` / `SettingsDialog.xaml.cs` — Settings dialog (history limits, database size display, clear history, minimize-to-tray, start-at-login, start-minimized toggles, data directory link)
+- `Simply.ClipboardMonitor/Views/CrashDialog.xaml` / `CrashDialog.xaml.cs` — Crash dialog shown on unhandled exceptions; displays a clickable link to the error log file
 
 ### Models
 Data-transfer records and plain model classes with no service dependencies.
@@ -339,6 +355,7 @@ One class per clipboard handle type or export file format. All classes are `inte
 Internal utility types with no domain logic.
 
 - `Common/AutoStartHelper.cs` — reads and writes the Windows current-user auto-start registry key
+- `Common/ErrorLogger.cs` — thread-safe rolling error logger; writes to dated `.txt` files under `%LOCALAPPDATA%\Simply.ClipboardMonitor\`, retaining the three most recent files
 - `Common/ClipboardFormatConstants.cs` — Windows clipboard format ID constants (`CF_TEXT`, `CF_BITMAP`, etc.), handle-type classification sets, and shared image-format detection
 - `Common/DisplayHelper.cs` — shared display formatting utilities (human-readable byte-size strings)
 - `Common/HexRow.cs` — single hex-dump display row (offset, hex bytes, ASCII)

@@ -169,6 +169,18 @@ The Settings dialog also shows the current database file size and provides a **C
 
 When history tracking is active, the status bar shows "Tracking history (X.X MB storage size)...".
 
+### Database integrity
+
+Each time history tracking is initialized — on startup when **Track History** is on, or when the user enables it — the app runs `PRAGMA integrity_check` on `history.db`. If corruption is detected, a dialog is shown with three choices:
+
+| Choice | Effect |
+|--------|--------|
+| **Recover** | Attempts to salvage as much data as possible. Tries `VACUUM INTO` first (SQLite's built-in clean-copy mechanism); if that fails, falls back to a table-by-table bulk copy and then row-by-row rescue for any table whose bulk copy fails. On success the recovered file replaces the original. If some rows were unreadable, a warning is shown. If all strategies fail, a second dialog offers Delete or Disable. |
+| **Delete and Start Fresh** | Deletes the corrupt file and creates a new empty database. |
+| **Disable History Tracking** | Turns off history tracking. Any clipboard changes that arrived while the dialog was open are discarded. |
+
+The integrity check is run again whenever **Track History** is toggled on after being off, unless the database was already verified during the current session.
+
 ## System Tray
 
 The application can be kept running in the system tray instead of closing when the main window is dismissed.
@@ -212,12 +224,15 @@ When the application encounters an unhandled exception, it shows a crash dialog 
 
 Error logs are written to `%LOCALAPPDATA%\Simply.ClipboardMonitor\` and named `error_YYYY-MM-DD.txt`. If the file with today's date does not exist, it means that no loggable errors occurred today. The three most recent log files are kept; older files are deleted automatically.
 
-In addition to unhandled exceptions, the following errors are silently logged without interrupting the application:
+In addition to unhandled exceptions, the following situations are logged without interrupting the application:
 
 - Errors reading or writing the preferences file — unless the file is simply absent.
 - Errors reading or writing the history database — unless the database file is simply absent.
 - Errors reading or writing `.clipdb` snapshot files — unless the file is simply absent.
 - Unobserved background task exceptions.
+- Detection of a corrupted history database.
+- The choice made by the user in the corruption dialog (Recover / Delete and Start Fresh / Disable History Tracking).
+- Recovery outcome: strategy used (VACUUM INTO or manual copy), number of sessions recovered, and estimated number of sessions lost.
 
 The data directory is also accessible from **File → Settings**, which has a link at the bottom of the dialog that opens Windows Explorer at `%LOCALAPPDATA%\Simply.ClipboardMonitor\`.
 
@@ -281,7 +296,7 @@ A **Save As** dialog opens with the file name pre-set to `clipboard-{format_name
 - SQLite via `Microsoft.Data.Sqlite` (clipboard database persistence and history)
 - ZStandard via `ZstdSharp.Port` (history blob compression)
 - `Microsoft.Extensions.DependencyInjection` (constructor injection throughout)
-- `System.Drawing.Common` (system tray icon loading)
+- `System.Drawing.Common` (system tray icon loading; system warning icon in the corruption dialog)
 
 ## Project Structure
 
@@ -293,6 +308,8 @@ A **Save As** dialog opens with the file name pre-set to `clipboard-{format_name
 - `Simply.ClipboardMonitor/Views/AboutDialog.xaml` / `AboutDialog.xaml.cs` — About dialog
 - `Simply.ClipboardMonitor/Views/SettingsDialog.xaml` / `SettingsDialog.xaml.cs` — Settings dialog (history limits, database size display, clear history, minimize-to-tray, start-at-login, start-minimized toggles, data directory link)
 - `Simply.ClipboardMonitor/Views/CrashDialog.xaml` / `CrashDialog.xaml.cs` — Crash dialog shown on unhandled exceptions; displays a clickable link to the error log file
+- `Simply.ClipboardMonitor/Views/DatabaseCorruptionDialog.xaml` / `DatabaseCorruptionDialog.xaml.cs` — Modal dialog shown when `history.db` fails an integrity check; offers Recover / Delete and Start Fresh / Disable History Tracking choices (also used as a two-option dialog after a failed recovery attempt)
+- `Simply.ClipboardMonitor/Views/DatabaseRecoveringWindow.xaml` / `DatabaseRecoveringWindow.xaml.cs` — Non-closeable "Recovering…" progress window shown while database recovery runs in the background
 
 ### Models
 Data-transfer records and plain model classes with no service dependencies.
@@ -316,8 +333,10 @@ Public domain service interfaces consumed by the main window and DI wiring.
 - `Services/IClipboardWriter.cs` — restore saved formats back onto the clipboard
 - `Services/IFormatClassifier.cs` — classify formats into colored pills and tooltip text for the history list
 - `Services/IFormatExporter.cs` — export a clipboard format to a file (one implementation per output type)
-- `Services/IHistoryMaintenance.cs` — database maintenance operations (schema migration, enforce size limits, clear history)
+- `Services/IHistoryMaintenance.cs` — database maintenance operations (schema migration, enforce size limits, clear history, integrity check, recovery, delete, create fresh database)
 - `Services/IHistoryRepository.cs` — clipboard history persistence (add session, load sessions with optional filter, load session formats, delete a single session, total session count, duplicate detection)
+- `Services/DatabaseIntegrityStatus.cs` — `Absent` / `Healthy` / `Corrupted` enum returned by `IHistoryMaintenance.CheckIntegrity()`
+- `Services/RecoveryResult.cs` — result record for `IHistoryMaintenance.TryRecover()`: success flag, data-loss flag, strategy name, sessions recovered, sessions lost
 - `Services/IImagePreviewService.cs` — create WPF `BitmapSource` previews from raw clipboard bytes
 - `Services/IPreferencesService.cs` — load and save user preferences
 - `Services/ITextDecodingService.cs` — decode raw bytes as text with auto-detection or manual encoding override
@@ -331,7 +350,7 @@ Concrete service implementations. All classes are `internal sealed`.
 - `Services/Impl/ClipboardReaderService.cs` — Win32 clipboard reading; dispatches per-handle-type work to injected `IHandleReadStrategy` implementations
 - `Services/Impl/ClipboardWriterService.cs` — Win32 clipboard writing; dispatches per-handle-type work to injected `IHandleWriteStrategy` implementations
 - `Services/Impl/FormatClassifierService.cs` — produces colored pills and tooltip text for the history list
-- `Services/Impl/HistoryRepository.cs` — history database (SQLite, ZStandard compression, SHA-256 deduplication, session trimming, single-session deletion with orphan cleanup, schema migration, duplicate detection); implements both `IHistoryRepository` and `IHistoryMaintenance`
+- `Services/Impl/HistoryRepository.cs` — history database (SQLite, ZStandard compression, SHA-256 deduplication, session trimming, single-session deletion with orphan cleanup, schema migration, integrity check, three-strategy recovery, fresh-database initialization, duplicate detection); implements both `IHistoryRepository` and `IHistoryMaintenance`
 - `Services/Impl/ImagePreviewService.cs` — decodes DIB, HBITMAP-derived, and encoded image formats into WPF `BitmapSource` objects
 - `Services/Impl/PreferencesService.cs` — JSON preferences persisted to `%LOCALAPPDATA%\Simply.ClipboardMonitor\preferences.json`
 - `Services/Impl/TextDecodingService.cs` — text decoding with format-aware priority chain and UTF-16 heuristics
@@ -355,7 +374,7 @@ One class per clipboard handle type or export file format. All classes are `inte
 Internal utility types with no domain logic.
 
 - `Common/AutoStartHelper.cs` — reads and writes the Windows current-user auto-start registry key
-- `Common/ErrorLogger.cs` — thread-safe rolling error logger; writes to dated `.txt` files under `%LOCALAPPDATA%\Simply.ClipboardMonitor\`, retaining the three most recent files
+- `Common/ErrorLogger.cs` — thread-safe rolling logger; `Log(Exception)` for errors and `LogInfo(string)` for informational events; writes to dated `.txt` files under `%LOCALAPPDATA%\Simply.ClipboardMonitor\`, retaining the three most recent files
 - `Common/ClipboardFormatConstants.cs` — Windows clipboard format ID constants (`CF_TEXT`, `CF_BITMAP`, etc.), handle-type classification sets, and shared image-format detection
 - `Common/DisplayHelper.cs` — shared display formatting utilities (human-readable byte-size strings)
 - `Common/HexRow.cs` — single hex-dump display row (offset, hex bytes, ASCII)

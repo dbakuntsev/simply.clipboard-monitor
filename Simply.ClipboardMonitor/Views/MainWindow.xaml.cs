@@ -146,6 +146,10 @@ public partial class MainWindow : Window
     private readonly Channel<Action> _historyChannel =
         Channel.CreateUnbounded<Action>();
 
+    // Set to true once CheckIntegrity + MigrateSchema have succeeded for the current
+    // database file.  Prevents redundant integrity checks on subsequent enable/disable cycles.
+    private bool _historyDatabaseReady;
+
     private sealed class HistoryItem
     {
         public required long     SessionId   { get; init; }
@@ -239,17 +243,22 @@ public partial class MainWindow : Window
         if (!_isMonitoring)
             CaptureStaticSnapshot();
 
-        // Migrate an existing database before the first load so that the new search
-        // columns are present and filtering works correctly from the first keystroke.
-        _historyChannel.Writer.TryWrite(() => _historyMaintenance.MigrateSchema());
-
-        if (_isTrackingHistory)
-        {
-            LoadHistoryFromDatabase();
-            // Capture the current clipboard so it appears in history immediately;
-            // if it matches the last recorded session, that session is selected instead.
-            CaptureStartupSession();
-        }
+        // Run integrity check and schema migration on the history channel so they are
+        // serialised with all subsequent DB writes.  LoadHistoryFromDatabase and
+        // CaptureStartupSession are deferred until after migration completes — they run
+        // as the onReady callback so they never race against an incompatible schema.
+        var isTracking = _isTrackingHistory;
+        if (isTracking)
+            ShowHistoryLoadingOverlay();
+        Action? onReady = isTracking
+            ? () => Dispatcher.Invoke(() =>
+              {
+                  HideHistoryLoadingOverlay();
+                  CaptureStartupSession();
+                  LoadHistoryFromDatabase(selectFirst: true);
+              })
+            : null;
+        _historyChannel.Writer.TryWrite(() => InitializeDatabaseOnChannel(isTracking, onReady));
     }
 
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
@@ -1678,8 +1687,16 @@ public partial class MainWindow : Window
         if (_isTrackingHistory)
         {
             ShowHistoryPanel();
-            LoadHistoryFromDatabase();
-            CaptureStartupSession();
+            ShowHistoryLoadingOverlay();
+            // Defer loading until integrity check and migration complete on the channel.
+            _historyChannel.Writer.TryWrite(() => InitializeDatabaseOnChannel(
+                isTrackingHistory: true,
+                onReady: () => Dispatcher.Invoke(() =>
+                {
+                    HideHistoryLoadingOverlay();
+                    CaptureStartupSession();
+                    LoadHistoryFromDatabase(selectFirst: true);
+                })));
         }
         else
         {
@@ -1886,6 +1903,175 @@ public partial class MainWindow : Window
         {
             action();
         }
+    }
+
+    // ── Database initialisation orchestration ────────────────────────────────
+    // Runs on the history background channel thread (not the UI thread).
+
+    /// <summary>
+    /// Checks database integrity, migrates the schema, and invokes <paramref name="onReady"/>
+    /// once the database is ready.  Handles corruption by prompting the user via the UI thread.
+    /// Must be called as a channel action (background thread).
+    /// </summary>
+    private void InitializeDatabaseOnChannel(bool isTrackingHistory, Action? onReady)
+    {
+        // Fast path: integrity check and schema migration already completed this session.
+        if (_historyDatabaseReady)
+        {
+            onReady?.Invoke();
+            return;
+        }
+
+        var status = _historyMaintenance.CheckIntegrity();
+
+        if (status == DatabaseIntegrityStatus.Corrupted)
+            ErrorLogger.Log(new InvalidOperationException(
+                "history.db failed PRAGMA integrity_check — " +
+                (isTrackingHistory ? "prompting user for recovery action."
+                                   : "history tracking is off, skipping recovery.")));
+
+        if (status != DatabaseIntegrityStatus.Corrupted)
+        {
+            // Absent or Healthy: migrate schema and signal readiness.
+            _historyMaintenance.MigrateSchema();
+            _historyDatabaseReady = true;
+            onReady?.Invoke();
+            return;
+        }
+
+        if (!isTrackingHistory)
+            return; // Silently skip; will re-check when history tracking is enabled.
+
+        // Corrupted + history tracking is on: prompt the user.
+        HandleCorruptDatabase(onReady);
+    }
+
+    private void HandleCorruptDatabase(Action? onReady)
+    {
+        var choice = Dispatcher.Invoke(() => ShowCorruptionDialog(showRecoverOption: true));
+        ErrorLogger.LogInfo($"Corruption dialog: user chose {choice}.");
+
+        switch (choice)
+        {
+            case CorruptionDialogResult.Recover:
+                AttemptRecovery(onReady);
+                break;
+            case CorruptionDialogResult.DeleteAndReset:
+                DeleteAndReset(onReady);
+                break;
+            default: // Disable
+                Dispatcher.Invoke(DisableHistoryTracking);
+                DrainHistoryChannel();
+                break;
+        }
+    }
+
+    private void AttemptRecovery(Action? onReady)
+    {
+        // Show "Recovering…" window and block the main window from interaction.
+        DatabaseRecoveringWindow? recoveringWindow = null;
+        Dispatcher.Invoke(() =>
+        {
+            recoveringWindow = new DatabaseRecoveringWindow { Owner = this };
+            IsEnabled = false;
+            recoveringWindow.Show();
+        });
+
+        var result = _historyMaintenance.TryRecover();
+
+        Dispatcher.Invoke(() =>
+        {
+            recoveringWindow?.CloseWindow();
+            IsEnabled = true;
+        });
+
+        if (result.Success)
+        {
+            ErrorLogger.LogInfo(
+                $"Recovery succeeded using {result.Strategy}. " +
+                $"Sessions recovered: {result.SessionsRecovered}, lost: {result.SessionsLost}.");
+
+            _historyMaintenance.MigrateSchema();
+            _historyDatabaseReady = true;
+
+            if (result.HadUnreadableRows)
+            {
+                Dispatcher.Invoke(() => MessageBox.Show(
+                    this,
+                    "Recovery completed. Some history entries may be incomplete or missing " +
+                    "due to unreadable rows in the corrupted database.",
+                    "Recovery Warning",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning));
+            }
+
+            onReady?.Invoke();
+        }
+        else
+        {
+            ErrorLogger.LogInfo($"Recovery failed (strategy: {result.Strategy}).");
+
+            // All recovery strategies failed; offer delete or disable.
+            var choice = Dispatcher.Invoke(() => ShowCorruptionDialog(showRecoverOption: false));
+            ErrorLogger.LogInfo($"Post-recovery failure dialog: user chose {choice}.");
+            switch (choice)
+            {
+                case CorruptionDialogResult.DeleteAndReset:
+                    DeleteAndReset(onReady);
+                    break;
+                default: // Disable
+                    Dispatcher.Invoke(DisableHistoryTracking);
+                    DrainHistoryChannel();
+                    break;
+            }
+        }
+    }
+
+    private void DeleteAndReset(Action? onReady)
+    {
+        _historyMaintenance.DeleteDatabase();
+        _historyMaintenance.InitializeFreshDatabase();
+        _historyDatabaseReady = true;
+        onReady?.Invoke();
+    }
+
+    /// <summary>
+    /// Drains all pending actions from the history channel.
+    /// Called from within a channel action (the consumer is paused), so TryRead is safe.
+    /// </summary>
+    private void DrainHistoryChannel()
+    {
+        while (_historyChannel.Reader.TryRead(out _)) { }
+    }
+
+    /// <summary>Must be called on the UI thread.</summary>
+    private CorruptionDialogResult ShowCorruptionDialog(bool showRecoverOption)
+    {
+        var dialog = new DatabaseCorruptionDialog(showRecoverOption) { Owner = this };
+        dialog.ShowDialog();
+        return dialog.Result;
+    }
+
+    /// <summary>
+    /// Turns history tracking off, updates all related UI state, and saves preferences.
+    /// Must be called on the UI thread.
+    /// </summary>
+    private void DisableHistoryTracking()
+    {
+        _isTrackingHistory             = false;
+        MenuItemTrackHistory.IsChecked = false;
+        HideHistoryLoadingOverlay();
+        HideHistoryPanel();
+        _historyItems.Clear();
+
+        if (_historySnapshots != null)
+        {
+            _historySnapshots = null;
+            RefreshFormats();
+        }
+
+        UpdateStatusBar();
+        SavePreferences();
     }
 
     private record SessionPayload(
@@ -2219,4 +2405,7 @@ public partial class MainWindow : Window
         LeftPanelGrid.RowDefinitions[1].Height = new GridLength(0);
         LeftPanelGrid.RowDefinitions[2].Height = new GridLength(0);
     }
+
+    private void ShowHistoryLoadingOverlay()  => HistoryLoadingOverlay.Visibility = Visibility.Visible;
+    private void HideHistoryLoadingOverlay()  => HistoryLoadingOverlay.Visibility = Visibility.Collapsed;
 }

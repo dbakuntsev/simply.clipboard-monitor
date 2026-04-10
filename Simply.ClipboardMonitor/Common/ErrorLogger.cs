@@ -58,6 +58,32 @@ internal static class ErrorLogger
         }
     }
 
+    /// <summary>
+    /// Appends an informational message to today's log file and trims old files.
+    /// Never throws.
+    /// </summary>
+    public static void LogInfo(string message)
+    {
+        try
+        {
+            var now         = DateTime.Now;
+            var logFilePath = Path.Combine(LogDirectory, $"error_{now:yyyy-MM-dd}.txt");
+            var entry       = $"{now:O} | {AppVersion} | INFO | {message}{Environment.NewLine}";
+
+            lock (_lock)
+            {
+                Directory.CreateDirectory(LogDirectory);
+                File.AppendAllText(logFilePath, entry, Encoding.UTF8);
+                CurrentLogFilePath = logFilePath;
+                PruneOldLogs();
+            }
+        }
+        catch
+        {
+            // Best-effort — never propagate errors from the logger.
+        }
+    }
+
     // ── Formatting ───────────────────────────────────────────────────────────
 
     private static string FormatEntry(DateTime timestamp, Exception exception)

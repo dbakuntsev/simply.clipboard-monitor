@@ -291,6 +291,18 @@
                            FontSize="11"
                            Padding="3,0"
                            Margin="0,3,12,0" />
+                <!-- Loading overlay: shown while integrity check / schema migration is in progress. -->
+                <Border x:Name="HistoryLoadingOverlay"
+                        Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}"
+                        Opacity="0.75"
+                        Visibility="Collapsed"
+                        Panel.ZIndex="10">
+                    <TextBlock Text="Loading…"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               Foreground="Gray"
+                               FontSize="13" />
+                </Border>
                 </Grid>
             </Grid>
 

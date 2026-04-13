@@ -11,6 +11,8 @@ on:
 
 jobs:
   test:
+    permissions:
+      contents: read
     strategy:
       matrix:
         kind: ['windows']

@@ -1,12 +1,11 @@
 using Microsoft.Data.Sqlite;
-using Microsoft.Web.WebView2.Core;
 using Microsoft.Win32;
-using System.Text.RegularExpressions;
 using System.Threading.Channels;
 using Simply.ClipboardMonitor.Common;
 using static Simply.ClipboardMonitor.Common.ClipboardFormatConstants;
 using Simply.ClipboardMonitor.Models;
 using Simply.ClipboardMonitor.Services;
+using Simply.ClipboardMonitor.Views.Previews;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Globalization;
@@ -58,15 +57,6 @@ public partial class MainWindow : Window
         public bool                 IsExiting     { get; set; }
     }
 
-    private record struct TextDecodingState
-    {
-        public byte[]?                      Bytes                { get; set; }
-        public bool                         SuppressChange       { get; set; }
-        public IReadOnlyList<EncodingItem>? EncodingItems        { get; set; }
-        public Encoding?                    AutoDetectedEncoding { get; set; }
-        public bool                         ManuallyChanged      { get; set; }
-    }
-
     private record struct FormatSelectionState
     {
         public byte[]? Bytes      { get; set; }
@@ -74,32 +64,20 @@ public partial class MainWindow : Window
         public string  FormatName { get; set; }
     }
 
-    private record struct ImagePanState
-    {
-        public bool   IsPanning        { get; set; }
-        public Point  StartMouse       { get; set; }
-        public double HorizontalOffset { get; set; }
-        public double VerticalOffset   { get; set; }
-    }
-
     // ── Injected services ──────────────────────────────────────────────────
     private readonly IClipboardReader         _clipboardReader;
     private readonly IClipboardWriter         _clipboardWriter;
     private readonly ITextDecodingService     _textDecoding;
-    private readonly IImagePreviewService     _imagePreviews;
     private readonly IFormatClassifier        _formatClassifier;
     private readonly IPreferencesService      _preferences;
     private readonly IHistoryRepository       _history;
     private readonly IHistoryMaintenance      _historyMaintenance;
     private readonly IClipboardFileRepository _clipboardFiles;
     private readonly IReadOnlyList<IFormatExporter> _formatExporters;
+    private readonly IReadOnlyList<IPreviewTab>     _previewTabs;
 
     private readonly ObservableCollection<ClipboardFormatItem> _formats = [];
     private HwndSource? _hwndSource;
-    private double _fitScale = 1.0;
-    private bool _ignoreZoomChanges;
-    // Set to true after InitializeComponent to suppress events fired during XAML initialization.
-    private bool _isUiReady;
     private string _currentSortProperty = DefaultSortProperty;
     private ListSortDirection _currentSortDirection = ListSortDirection.Ascending;
     private List<FormatColumnPreference> _storedColumnPreferences = [];
@@ -115,14 +93,8 @@ public partial class MainWindow : Window
     private bool _startAtLogin;
     private bool _startMinimized;
 
-    // Text-preview encoding state
-    private TextDecodingState _textState;
-
     // Selected format state — raw bytes and identity of the currently selected format
     private FormatSelectionState _formatState = new() { FormatName = string.Empty };
-
-    // Image pan state
-    private ImagePanState _panState;
 
     // History filtering state
     private string                    _historyFilter = string.Empty;
@@ -153,11 +125,6 @@ public partial class MainWindow : Window
     // database file.  Prevents redundant integrity checks on subsequent enable/disable cycles.
     private bool _historyDatabaseReady;
 
-    // HTML preview state
-    private bool    _htmlWebViewReady;
-    private bool    _htmlWebViewInitAttempted;
-    private string? _pendingHtml;
-
     private sealed class HistoryItem
     {
         public required long     SessionId   { get; init; }
@@ -177,36 +144,40 @@ public partial class MainWindow : Window
         IClipboardReader         clipboardReader,
         IClipboardWriter         clipboardWriter,
         ITextDecodingService     textDecoding,
-        IImagePreviewService     imagePreviews,
         IFormatClassifier        formatClassifier,
         IPreferencesService      preferences,
         IHistoryRepository       history,
         IHistoryMaintenance      historyMaintenance,
         IClipboardFileRepository clipboardFiles,
-        IEnumerable<IFormatExporter> formatExporters)
+        IEnumerable<IFormatExporter> formatExporters,
+        IEnumerable<IPreviewTab>     previewTabs)
     {
         _clipboardReader    = clipboardReader;
         _clipboardWriter    = clipboardWriter;
         _textDecoding       = textDecoding;
-        _imagePreviews      = imagePreviews;
         _formatClassifier   = formatClassifier;
         _preferences        = preferences;
         _history            = history;
         _historyMaintenance = historyMaintenance;
         _clipboardFiles     = clipboardFiles;
         _formatExporters    = formatExporters.ToList().AsReadOnly();
+        _previewTabs        = previewTabs.ToList().AsReadOnly();
 
         // Required for legacy OEM/ANSI code pages (e.g. CP437 used by CF_OEMTEXT) which
         // are not included in the default .NET encoding set.
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
         InitializeComponent();
+
+        // Register each preview tab's TabItem with the tab control.
+        foreach (var tab in _previewTabs)
+            ContentTabControl.Items.Add(tab.TabItem);
+
         CommandBindings.Add(new CommandBinding(RefreshClipboardCommand, RefreshClipboardCommand_Executed, RefreshClipboardCommand_CanExecute));
         CommandBindings.Add(new CommandBinding(LoadCommand, LoadCommand_Executed));
         CommandBindings.Add(new CommandBinding(SaveCommand, SaveCommand_Executed));
         CommandBindings.Add(new CommandBinding(ExportCommand, ExportCommand_Executed, ExportCommand_CanExecute));
         _ = Task.Run(ProcessHistoryChannelAsync);
-        _isUiReady = true;
         FormatListBox.ItemsSource   = _formats;
         HistoryListView.ItemsSource = _historyItems;
         LoadPreferences();
@@ -219,8 +190,6 @@ public partial class MainWindow : Window
         FormatListBox.AddHandler(GridViewColumnHeader.ClickEvent, new RoutedEventHandler(FormatListBox_OnColumnHeaderClick));
         ApplyFormatSort();
         InitializePreviewState();
-        PreviewKeyDown += (_, _) => UpdateImageScrollViewerCursor();
-        PreviewKeyUp   += (_, _) => UpdateImageScrollViewerCursor();
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -512,36 +481,39 @@ public partial class MainWindow : Window
         if (FormatListBox.SelectedItem is not ClipboardFormatItem item)
             return;
 
-        _formatState.FormatId    = item.FormatId;
-        _formatState.FormatName  = item.Name;
-        _formatState.Bytes = null;
+        _formatState.FormatId   = item.FormatId;
+        _formatState.FormatName = item.Name;
+        _formatState.Bytes      = null;
 
         ContentTabControl.Visibility = Visibility.Visible;
-        NoSelectionPanel.Visibility = Visibility.Collapsed;
-        TextTabItem.IsEnabled   = _textDecoding.IsTextCompatible(item.FormatId, item.Name);
-        LocaleTabItem.IsEnabled = item.FormatId == CF_LOCALE;
-        HtmlTabItem.IsEnabled   = IsHtmlFormat(item.Name);
-        RtfTabItem.IsEnabled    = IsRtfFormat(item.Name);
-        ImageTabItem.IsEnabled  = _imagePreviews.IsImageCompatible(item.FormatId, item.Name);
+        NoSelectionPanel.Visibility  = Visibility.Collapsed;
 
-        if (!TextTabItem.IsEnabled && ContentTabControl.SelectedItem == TextTabItem)
-            ContentTabControl.SelectedItem = HexTabItem;
-        if (!LocaleTabItem.IsEnabled && ContentTabControl.SelectedItem == LocaleTabItem)
-            ContentTabControl.SelectedItem = HexTabItem;
-        if (!HtmlTabItem.IsEnabled && ContentTabControl.SelectedItem == HtmlTabItem)
-            ContentTabControl.SelectedItem = HexTabItem;
-        if (!RtfTabItem.IsEnabled && ContentTabControl.SelectedItem == RtfTabItem)
-            ContentTabControl.SelectedItem = HexTabItem;
-        if (!ImageTabItem.IsEnabled && ContentTabControl.SelectedItem == ImageTabItem)
-            ContentTabControl.SelectedItem = HexTabItem;
+        // Resolve bytes (null when data is unavailable; tabs handle null gracefully).
+        TryGetFormatBytes(item, out var bytes, out _);
+        _formatState.Bytes = bytes;
 
-        if (!TryGetFormatBytes(item, out var bytes, out var hexFailureMessage))
-        {
-            SetHexPreviewUnavailable(hexFailureMessage);
+        foreach (var tab in _previewTabs)
+            tab.Update(item.FormatId, item.Name, bytes);
+
+        AutoSelectBestTab();
+    }
+
+    /// <summary>
+    /// Keeps the currently selected tab if it is still enabled; otherwise switches to the
+    /// enabled tab with the lowest <see cref="IPreviewTab.Priority"/> value.
+    /// </summary>
+    private void AutoSelectBestTab()
+    {
+        if (ContentTabControl.SelectedItem is TabItem current && current.IsEnabled)
             return;
-        }
 
-        UpdateAllPreviews(item, bytes, hexFailureMessage);
+        var best = _previewTabs
+            .Where(t => t.TabItem.IsEnabled)
+            .OrderBy(t => t.Priority)
+            .FirstOrDefault();
+
+        if (best != null)
+            ContentTabControl.SelectedItem = best.TabItem;
     }
 
     /// <summary>
@@ -609,725 +581,16 @@ public partial class MainWindow : Window
         return true;
     }
 
-    private void UpdateAllPreviews(ClipboardFormatItem item, byte[]? bytes, string hexFailureMessage)
-    {
-        _formatState.Bytes = bytes;
-
-        if (bytes != null)
-        {
-            SetHexPreview(bytes);
-            UpdateTextPreview(item.FormatId, item.Name, bytes);
-            UpdateLocalePreview(item.FormatId, bytes);
-            UpdateHtmlPreview(item.Name, bytes);
-            UpdateRtfPreview(item.Name, bytes);
-
-            if (_imagePreviews.TryCreatePreview(item.FormatId, item.Name, bytes,
-                    out var imagePreview, out var imageFailureMessage) && imagePreview != null)
-                SetImagePreview(imagePreview);
-            else
-                SetImagePreviewUnavailable(imageFailureMessage);
-        }
-        else
-        {
-            SetHexPreviewUnavailable(hexFailureMessage);
-            SetTextPreviewUnavailable("Text preview requires byte-addressable clipboard data.");
-            SetLocalePreviewUnavailable("Locale preview requires byte-addressable clipboard data.");
-            SetHtmlPreviewUnavailable("HTML preview requires byte-addressable clipboard data.");
-            SetRtfPreviewUnavailable("RTF preview requires byte-addressable clipboard data.");
-            SetImagePreviewUnavailable("Image preview requires byte-addressable clipboard data.");
-        }
-    }
-
-    private void SetHexPreview(byte[] data)
-    {
-        HexStatusTextBlock.Text = $"Showing {data.Length:N0} bytes ({((data.Length + HexRowCollection.BytesPerRow - 1) / HexRowCollection.BytesPerRow):N0} rows).";
-        HexListView.ItemsSource = new HexRowCollection(data);
-    }
-
-    private void SetHexPreviewUnavailable(string message)
-    {
-        HexStatusTextBlock.Text = message;
-        HexListView.ItemsSource = null;
-    }
-
-    private void UpdateTextPreview(uint formatId, string formatName, byte[] bytes)
-    {
-        _textState.Bytes            = bytes;
-        _textState.AutoDetectedEncoding = null;
-        _textState.ManuallyChanged = false;
-
-        var result = _textDecoding.Decode(formatId, formatName, bytes);
-
-        if (!result.Success)
-        {
-            SetTextPreviewUnavailable(result.FailureMessage ?? "Text preview unavailable for this format.");
-            return;
-        }
-
-        _textState.AutoDetectedEncoding    = result.DetectedEncoding;
-        TextContentTextBox.Foreground   = SystemColors.WindowTextBrush;
-        TextContentTextBox.Text         = result.Text ?? string.Empty;
-        TextStatusTextBlock.Text        = _textDecoding.GetDecodedTextStats(result.Text ?? string.Empty);
-        PopulateEncodingComboBox(result.DetectedEncoding);
-    }
-
-    private void PopulateEncodingComboBox(Encoding? preselect)
-    {
-        _textState.EncodingItems ??= _textDecoding.GetAvailableEncodings();
-
-        if (TextEncodingComboBox.ItemsSource == null)
-            TextEncodingComboBox.ItemsSource = _textState.EncodingItems;
-
-        TextEncodingComboBox.IsEnabled = true;
-
-        _textState.SuppressChange = true;
-        TextEncodingComboBox.SelectedItem = preselect != null
-            ? _textState.EncodingItems.FirstOrDefault(e => e.Encoding.CodePage == preselect.CodePage)
-            : null;
-        _textState.SuppressChange = false;
-    }
-
-    private void TextEncodingComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (_textState.SuppressChange)
-            return;
-        if (TextEncodingComboBox.SelectedItem is not EncodingItem item || _textState.Bytes == null)
-            return;
-
-        _textState.ManuallyChanged = true;
-
-        var result = _textDecoding.DecodeWith(_textState.Bytes, item.Encoding);
-
-        if (result.Success)
-        {
-            TextContentTextBox.Text       = result.Text ?? string.Empty;
-            TextContentTextBox.Foreground = SystemColors.WindowTextBrush;
-            TextStatusTextBlock.Text      = _textDecoding.GetDecodedTextStats(result.Text ?? string.Empty);
-        }
-        else
-        {
-            TextContentTextBox.Text       = $"Cannot decode as {item.DisplayName}:\n{result.FailureMessage}";
-            TextContentTextBox.Foreground = Brushes.Crimson;
-            TextStatusTextBlock.Text      = "Decoding failed.";
-        }
-    }
-
-    private void SetImagePreview(BitmapSource image)
-    {
-        ImagePreview.Source = image;
-        ImageStatusTextBlock.Text = string.Empty;
-        ZoomSlider.IsEnabled = true;
-        ImageDimensionsWidthTextBlock.Text  = $"{image.PixelWidth}px";
-        ImageDimensionsHeightTextBlock.Text = $"{image.PixelHeight}px";
-        ImageDimensionsStackPanel.Visibility = Visibility.Visible;
-        SetZoomValue(1);
-        UpdateFitScale();
-    }
-
-    private void SetImagePreviewUnavailable(string message)
-    {
-        ImagePreview.Source = null;
-        ImageStatusTextBlock.Text = message;
-        ZoomSlider.IsEnabled = false;
-        ImageDimensionsStackPanel.Visibility = Visibility.Collapsed;
-        SetZoomValue(1);
-        ApplyImageScale(1);
-    }
-
-    private void SetTextPreviewUnavailable(string message)
-    {
-        _textState.Bytes               = null;
-        _textState.AutoDetectedEncoding    = null;
-        _textState.ManuallyChanged    = false;
-        TextStatusTextBlock.Text        = message;
-        TextContentTextBox.Foreground   = SystemColors.WindowTextBrush;
-        TextContentTextBox.Text         = string.Empty;
-        TextEncodingComboBox.IsEnabled  = false;
-    }
-
-    // ── Locale preview ───────────────────────────────────────────────────────
-
-    private void UpdateLocalePreview(uint formatId, byte[] bytes)
-    {
-        if (formatId != CF_LOCALE)
-        {
-            SetLocalePreviewUnavailable("Locale preview unavailable for this format.");
-            return;
-        }
-        if (bytes.Length < 4)
-        {
-            SetLocalePreviewUnavailable("CF_LOCALE data is too short to decode.");
-            return;
-        }
-
-        var lcid    = BitConverter.ToUInt32(bytes, 0);
-        var lcidHex = $"0x{lcid:X4}";
-
-        string? tag         = null;
-        string? displayName = null;
-        try
-        {
-            var culture = CultureInfo.GetCultureInfo((int)lcid);
-            tag         = culture.Name;
-            displayName = culture.DisplayName;
-        }
-        catch { }
-
-        LocaleStatusTextBlock.Text  = string.Empty;
-        LocaleLcidTextBlock.Text    = lcidHex;
-        LocaleTagTextBlock.Text     = tag ?? string.Empty;
-        LocaleNameTextBlock.Text    = displayName ?? string.Empty;
-        LocaleTagRow.Visibility     = tag != null ? Visibility.Visible : Visibility.Collapsed;
-        LocaleNameRow.Visibility    = displayName != null ? Visibility.Visible : Visibility.Collapsed;
-        LocaleContentPanel.Visibility = Visibility.Visible;
-    }
-
-    private void SetLocalePreviewUnavailable(string message)
-    {
-        LocaleStatusTextBlock.Text    = message;
-        LocaleContentPanel.Visibility = Visibility.Collapsed;
-    }
-
-    // ── HTML preview ─────────────────────────────────────────────────────────
-
-    private void UpdateHtmlPreview(string formatName, byte[] bytes)
-    {
-        if (!IsHtmlFormat(formatName))
-        {
-            SetHtmlPreviewUnavailable("HTML preview unavailable for this format.");
-            return;
-        }
-
-        try
-        {
-            // "HTML Format" (CF_HTML) has an ASCII header with byte offsets; strip it first.
-            // For all other HTML formats (text/html, text/_moz_htmlcontext, …) the payload
-            // is a bare HTML string whose encoding is detected by the standard text pipeline,
-            // which handles UTF-16 LE (common on Windows), UTF-8 BOM, and ANSI correctly.
-            var html = TryExtractCfHtml(bytes)
-                    ?? _textDecoding.Decode(0, formatName, bytes).Text
-                    ?? string.Empty;
-            SetHtmlPreview(html);
-        }
-        catch
-        {
-            SetHtmlPreviewUnavailable("Could not decode HTML content.");
-        }
-    }
-
-    private void SetHtmlPreview(string html)
-    {
-        _pendingHtml = null;
-        HtmlStatusTextBlock.Text = string.Empty;
-
-        if (_htmlWebViewReady)
-        {
-            HtmlWebView.Visibility = Visibility.Visible;
-            HtmlWebView.NavigateToString(html);
-        }
-        else
-        {
-            // WebView2 not yet initialised — queue the content.
-            _pendingHtml = html;
-        }
-    }
-
-    private void SetHtmlPreviewUnavailable(string message)
-    {
-        _pendingHtml = null;
-        HtmlStatusTextBlock.Text = message;
-        HtmlWebView.Visibility = Visibility.Collapsed;
-        if (_htmlWebViewReady)
-            HtmlWebView.CoreWebView2.Navigate("about:blank");
-    }
-
-    private void UpdateRtfPreview(string formatName, byte[] bytes)
-    {
-        if (!IsRtfFormat(formatName))
-        {
-            SetRtfPreviewUnavailable("RTF preview unavailable for this format.");
-            return;
-        }
-
-        try
-        {
-            var doc = new FlowDocument();
-            using var stream = new MemoryStream(bytes);
-            new TextRange(doc.ContentStart, doc.ContentEnd).Load(stream, DataFormats.Rtf);
-
-            // WPF's RTF importer sets FontFamily from the raw RTF font-table name (e.g.
-            // "Aptos SemiBold").  WPF's font resolver treats that as a family name and
-            // fails to find it, falling back to normal weight.  Walk the document and
-            // split any compound names into base family + explicit weight/style.
-            NormalizeDocumentFonts(doc);
-
-            RtfContentBox.Document = doc;
-            RtfContentBox.Visibility = Visibility.Visible;
-
-            var text = new TextRange(doc.ContentStart, doc.ContentEnd).Text;
-            var charCount = text.Count(c => c != '\r' && c != '\n' && c != '\0');
-            RtfStatusTextBlock.Text = $"Showing {charCount:N0} characters ({bytes.Length:N0} bytes).";
-        }
-        catch
-        {
-            SetRtfPreviewUnavailable("Could not parse RTF content.");
-        }
-    }
-
-    // ── RTF font normalization ───────────────────────────────────────────────
-
-    // Recognized weight tokens and their WPF equivalents.
-    private static readonly Dictionary<string, FontWeight> _rtfWeightTokens =
-        new(StringComparer.OrdinalIgnoreCase)
-        {
-            ["Thin"]       = FontWeights.Thin,
-            ["ExtraLight"] = FontWeights.ExtraLight,
-            ["UltraLight"] = FontWeights.ExtraLight,
-            ["Light"]      = FontWeights.Light,
-            ["Medium"]     = FontWeights.Medium,
-            ["SemiBold"]   = FontWeights.SemiBold,
-            ["DemiBold"]   = FontWeights.SemiBold,
-            ["Bold"]       = FontWeights.Bold,
-            ["ExtraBold"]  = FontWeights.ExtraBold,
-            ["UltraBold"]  = FontWeights.ExtraBold,
-            ["Black"]      = FontWeights.Black,
-            ["Heavy"]      = FontWeights.Black,
-            ["ExtraBlack"] = FontWeights.ExtraBlack,
-            ["UltraBlack"] = FontWeights.ExtraBlack,
-        };
-
-    // Recognized style tokens and their WPF equivalents.
-    private static readonly Dictionary<string, FontStyle> _rtfStyleTokens =
-        new(StringComparer.OrdinalIgnoreCase)
-        {
-            ["Italic"]  = FontStyles.Italic,
-            ["Oblique"] = FontStyles.Oblique,
-        };
-
-    /// <summary>
-    /// Walks every <see cref="TextElement"/> in <paramref name="doc"/> that has a locally-set
-    /// <see cref="TextElement.FontFamilyProperty"/> and splits compound GDI face names
-    /// (e.g. "Aptos SemiBold", "Segoe UI Bold Italic") into a base family name plus explicit
-    /// <see cref="TextElement.FontWeight"/> and <see cref="TextElement.FontStyle"/> values.
-    /// </summary>
-    private static void NormalizeDocumentFonts(FlowDocument doc)
-    {
-        var queue = new Queue<TextElement>();
-        foreach (Block b in doc.Blocks) queue.Enqueue(b);
-
-        while (queue.Count > 0)
-        {
-            var elem = queue.Dequeue();
-
-            if (elem.ReadLocalValue(TextElement.FontFamilyProperty) is FontFamily family)
-                TryFixCompoundFontName(elem, family.Source);
-
-            switch (elem)
-            {
-                case Paragraph p:
-                    foreach (Inline i in p.Inlines) queue.Enqueue(i);
-                    break;
-                case Section s:
-                    foreach (Block b in s.Blocks) queue.Enqueue(b);
-                    break;
-                case Span sp:
-                    foreach (Inline i in sp.Inlines) queue.Enqueue(i);
-                    break;
-                case List lst:
-                    foreach (ListItem li in lst.ListItems) queue.Enqueue(li);
-                    break;
-                case ListItem li:
-                    foreach (Block b in li.Blocks) queue.Enqueue(b);
-                    break;
-                case Table tbl:
-                    foreach (TableRowGroup rg in tbl.RowGroups)
-                        foreach (TableRow row in rg.Rows)
-                            foreach (TableCell cell in row.Cells)
-                                foreach (Block b in cell.Blocks) queue.Enqueue(b);
-                    break;
-            }
-        }
-    }
-
-    /// <summary>
-    /// Peels recognized weight and style tokens off the end of <paramref name="familySource"/>
-    /// and applies them to <paramref name="element"/> as explicit font properties, then sets the
-    /// family to the remaining base name.  Does nothing if no tokens are recognized.
-    /// </summary>
-    private static void TryFixCompoundFontName(TextElement element, string familySource)
-    {
-        var parts = familySource.Split(' ');
-        if (parts.Length < 2) return;
-
-        FontWeight? weight = null;
-        FontStyle?  style  = null;
-        int end = parts.Length;
-
-        while (end > 1)
-        {
-            var token = parts[end - 1];
-            if (style == null && _rtfStyleTokens.TryGetValue(token, out var s))
-            { style = s; end--; }
-            else if (weight == null && _rtfWeightTokens.TryGetValue(token, out var w))
-            { weight = w; end--; }
-            else break;
-        }
-
-        if (end == parts.Length) return; // no recognized suffix found
-
-        element.FontFamily = new FontFamily(string.Join(" ", parts, 0, end));
-        if (weight.HasValue) element.FontWeight = weight.Value;
-        if (style.HasValue)  element.FontStyle  = style.Value;
-    }
-
-    private void SetRtfPreviewUnavailable(string message)
-    {
-        RtfStatusTextBlock.Text = message;
-        RtfContentBox.Visibility = Visibility.Collapsed;
-        RtfContentBox.Document = new FlowDocument();
-    }
-
-    private async void HtmlWebView_Loaded(object sender, RoutedEventArgs e)
-    {
-        if (_htmlWebViewInitAttempted) return;
-        _htmlWebViewInitAttempted = true;
-        await InitializeHtmlWebViewAsync();
-    }
-
-    private async Task InitializeHtmlWebViewAsync()
-    {
-        try
-        {
-            var userDataFolder = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "Simply.ClipboardMonitor", "WebView2");
-
-            var env = await CoreWebView2Environment.CreateAsync(userDataFolder: userDataFolder);
-            await HtmlWebView.EnsureCoreWebView2Async(env);
-
-            var settings = HtmlWebView.CoreWebView2.Settings;
-            settings.IsScriptEnabled              = false;
-            settings.AreDefaultContextMenusEnabled = false;
-            settings.AreDevToolsEnabled           = false;
-            settings.IsStatusBarEnabled           = false;
-
-            // The preview is read-only.  Cancel all user-initiated navigation (link clicks,
-            // anchor jumps, form submits).  NavigationStarting fires for programmatic calls too
-            // (NavigateToString, Navigate("about:blank")), so we must not cancel those —
-            // IsUserInitiated is false for code-driven navigations and true for user gestures.
-            HtmlWebView.CoreWebView2.NewWindowRequested += (_, e) => e.Handled = true;
-            HtmlWebView.CoreWebView2.NavigationStarting += (_, e) =>
-            {
-                if (e.IsUserInitiated) e.Cancel = true;
-            };
-
-            _htmlWebViewReady = true;
-
-            // Apply any HTML that was set while initialisation was in progress.
-            if (_pendingHtml is { } html)
-            {
-                _pendingHtml = null;
-                HtmlWebView.Visibility = Visibility.Visible;
-                HtmlStatusTextBlock.Text = string.Empty;
-                HtmlWebView.NavigateToString(html);
-            }
-        }
-        catch (Exception ex)
-        {
-            ErrorLogger.Log(ex);
-            HtmlStatusTextBlock.Text =
-                "HTML preview is unavailable: WebView2 Runtime not found. " +
-                "Install the Microsoft Edge WebView2 Evergreen Runtime to enable this feature.";
-        }
-    }
-
-    /// <summary>
-    /// Attempts to extract the HTML document portion from a CF_HTML ("HTML Format") payload
-    /// by reading the <c>StartHTML</c> and <c>EndHTML</c> byte offsets in its ASCII header.
-    /// Returns <see langword="null"/> if the format is not CF_HTML or the header cannot be parsed,
-    /// so the caller can fall back to standard encoding-aware text decoding.
-    /// </summary>
-    private static string? TryExtractCfHtml(byte[] bytes)
-    {
-        // CF_HTML header is ASCII; read just enough bytes to locate the offset fields.
-        try
-        {
-            var headerRegion = Encoding.ASCII.GetString(bytes, 0, Math.Min(512, bytes.Length));
-
-            // Bail out quickly if this doesn't look like a CF_HTML payload.
-            if (!headerRegion.StartsWith("Version:", StringComparison.OrdinalIgnoreCase))
-                return null;
-
-            var startMatch = Regex.Match(headerRegion, @"StartHTML:(-?\d+)", RegexOptions.IgnoreCase);
-            var endMatch   = Regex.Match(headerRegion, @"EndHTML:(-?\d+)",   RegexOptions.IgnoreCase);
-
-            if (startMatch.Success && endMatch.Success
-                && int.TryParse(startMatch.Groups[1].Value, out var startHtml)
-                && int.TryParse(endMatch.Groups[1].Value,   out var endHtml)
-                && startHtml >= 0 && endHtml > startHtml && endHtml <= bytes.Length)
-            {
-                return Encoding.UTF8.GetString(bytes, startHtml, endHtml - startHtml);
-            }
-        }
-        catch { }
-        return null;
-    }
-
     private void InitializePreviewState()
     {
-        SetHexPreviewUnavailable("Select a clipboard format to preview.");
-        SetTextPreviewUnavailable("Text preview unavailable for this format.");
-        SetLocalePreviewUnavailable("Select a clipboard format to preview.");
-        SetHtmlPreviewUnavailable("Select a clipboard format to preview.");
-        SetRtfPreviewUnavailable("Select a clipboard format to preview.");
-        SetImagePreviewUnavailable("Image preview unavailable for this format.");
-        TextTabItem.IsEnabled   = true;
-        LocaleTabItem.IsEnabled = true;
-        HtmlTabItem.IsEnabled   = true;
-        RtfTabItem.IsEnabled    = true;
-        ImageTabItem.IsEnabled  = true;
-        ContentTabControl.SelectedIndex = 0;
-        ContentTabControl.Visibility = Visibility.Collapsed;
-        NoSelectionPanel.Visibility  = Visibility.Visible;
-        _formatState.Bytes = null;
-        _formatState.FormatId    = 0;
-        _formatState.FormatName  = string.Empty;
-    }
-
-    private void ZoomSlider_OnValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
-    {
-        if (_ignoreZoomChanges || !_isUiReady)
-        {
-            return;
-        }
-
-        ApplyImageScale();
-    }
-
-    private void ResetZoomButton_OnClick(object sender, RoutedEventArgs e)
-    {
-        SetZoomValue(1);
-        ApplyImageScale();
-    }
-
-    private void ImageScrollViewer_OnSizeChanged(object sender, SizeChangedEventArgs e)
-    {
-        UpdateFitScale();
-    }
-
-    private void UpdateFitScale()
-    {
-        if (ImagePreview.Source is not BitmapSource source || source.PixelWidth <= 0 || source.PixelHeight <= 0)
-        {
-            _fitScale = 1;
-            ApplyImageScale();
-            return;
-        }
-
-        var viewportWidth  = ImageScrollViewer.ViewportWidth;
-        var viewportHeight = ImageScrollViewer.ViewportHeight;
-        if (viewportWidth <= 0 || viewportHeight <= 0)
-        {
-            _fitScale = 1;
-            ApplyImageScale();
-            return;
-        }
-
-        var fitX  = viewportWidth  / source.PixelWidth;
-        var fitY  = viewportHeight / source.PixelHeight;
-        _fitScale = Math.Min(1.0, Math.Min(fitX, fitY));
-        ApplyImageScale();
-    }
-
-    private void ApplyImageScale(double? explicitScale = null)
-    {
-        if (ImageScaleTransform == null || ZoomTextBox == null || ZoomSlider == null)
-        {
-            return;
-        }
-
-        var scale = explicitScale ?? (_fitScale * ZoomSlider.Value);
-        if (scale <= 0)
-        {
-            scale = 0.01;
-        }
-
-        ImageScaleTransform.ScaleX = scale;
-        ImageScaleTransform.ScaleY = scale;
-        ZoomTextBox.Text = FormatZoomPercentage(scale);
-    }
-
-    private static string FormatZoomPercentage(double scale) => $"{scale * 100:0}%";
-
-    private void SetZoomValue(double value)
-    {
-        _ignoreZoomChanges = true;
-        ZoomSlider.Value   = value;
-        _ignoreZoomChanges = false;
-    }
-
-    private void ZoomTextBox_LostFocus(object sender, RoutedEventArgs e)
-    {
-        CommitZoomTextBox();
-    }
-
-    private void ZoomTextBox_KeyDown(object sender, KeyEventArgs e)
-    {
-        if (e.Key == Key.Enter)
-        {
-            CommitZoomTextBox();
-            e.Handled = true;
-        }
-        else if (e.Key == Key.Escape)
-        {
-            ZoomTextBox.Text = FormatZoomPercentage(_fitScale * ZoomSlider.Value);
-            ZoomTextBox.SelectAll();
-            e.Handled = true;
-        }
-    }
-
-    private void CommitZoomTextBox()
-    {
-        var text = ZoomTextBox.Text.Trim().TrimEnd('%').TrimEnd();
-        if (double.TryParse(text, NumberStyles.Any, CultureInfo.CurrentCulture, out var pct) && pct > 0)
-        {
-            ApplyZoomFromPercentage(pct);
-        }
-        else
-        {
-            ZoomTextBox.Text = FormatZoomPercentage(_fitScale * ZoomSlider.Value);
-        }
-    }
-
-    private void ApplyZoomFromPercentage(double pct)
-    {
-        var newSliderValue = _fitScale > 0 ? pct / 100.0 / _fitScale : pct / 100.0;
-        newSliderValue = Math.Clamp(newSliderValue, ZoomSlider.Minimum, ZoomSlider.Maximum);
-        ZoomSlider.Value = newSliderValue;
-    }
-
-    private void ZoomUpButton_Click(object sender, RoutedEventArgs e)
-    {
-        StepZoom(+1);
-    }
-
-    private void ZoomDownButton_Click(object sender, RoutedEventArgs e)
-    {
-        StepZoom(-1);
-    }
-
-    private void StepZoom(int direction)
-    {
-        var currentPct = Math.Round(_fitScale * ZoomSlider.Value * 100);
-        ApplyZoomFromPercentage(currentPct + direction);
-    }
-
-    private void ImageScrollViewer_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
-    {
-        if ((Keyboard.Modifiers & ModifierKeys.Control) == 0)
-        {
-            return;
-        }
-
-        if (ImagePreview.Source is not BitmapSource source)
-        {
-            return;
-        }
-
-        e.Handled = true;
-
-        var mousePos     = e.GetPosition(ImageScrollViewer);
-        var currentScale = _fitScale * ZoomSlider.Value;
-        var contentX     = ImageScrollViewer.HorizontalOffset + mousePos.X;
-        var contentY     = ImageScrollViewer.VerticalOffset   + mousePos.Y;
-        var scaledW      = source.PixelWidth  * currentScale;
-        var scaledH      = source.PixelHeight * currentScale;
-        var imageLeft    = Math.Max(0.0, (ImageScrollViewer.ViewportWidth  - scaledW) / 2.0);
-        var imageTop     = Math.Max(0.0, (ImageScrollViewer.ViewportHeight - scaledH) / 2.0);
-        var imgLocalX    = (contentX - imageLeft) / currentScale;
-        var imgLocalY    = (contentY - imageTop)  / currentScale;
-
-        StepZoom(15 * Math.Sign(e.Delta));
-
-        Dispatcher.BeginInvoke(DispatcherPriority.Background, () =>
-        {
-            var newScale   = _fitScale * ZoomSlider.Value;
-            var newScaledW = source.PixelWidth  * newScale;
-            var newScaledH = source.PixelHeight * newScale;
-            var newImgLeft = Math.Max(0.0, (ImageScrollViewer.ViewportWidth  - newScaledW) / 2.0);
-            var newImgTop  = Math.Max(0.0, (ImageScrollViewer.ViewportHeight - newScaledH) / 2.0);
-            ImageScrollViewer.ScrollToHorizontalOffset(imgLocalX * newScale + newImgLeft - mousePos.X);
-            ImageScrollViewer.ScrollToVerticalOffset  (imgLocalY * newScale + newImgTop  - mousePos.Y);
-        });
-    }
-
-    private void ImageScrollViewer_MouseDown(object sender, MouseButtonEventArgs e)
-    {
-        if (e.ChangedButton != MouseButton.Middle)
-        {
-            return;
-        }
-
-        _panState.IsPanning = true;
-        _panState.StartMouse            = e.GetPosition(ImageScrollViewer);
-        _panState.HorizontalOffset = ImageScrollViewer.HorizontalOffset;
-        _panState.VerticalOffset   = ImageScrollViewer.VerticalOffset;
-        ImageScrollViewer.Cursor  = Cursors.ScrollAll;
-        Mouse.Capture(ImageScrollViewer);
-        e.Handled = true;
-    }
-
-    private void ImageScrollViewer_MouseUp(object sender, MouseButtonEventArgs e)
-    {
-        if (e.ChangedButton != MouseButton.Middle || !_panState.IsPanning)
-        {
-            return;
-        }
-
-        _panState.IsPanning = false;
-        Mouse.Capture(null);
-        UpdateImageScrollViewerCursor();
-        e.Handled = true;
-    }
-
-    private void ImageScrollViewer_MouseMove(object sender, MouseEventArgs e)
-    {
-        if (_panState.IsPanning)
-        {
-            var pos = e.GetPosition(ImageScrollViewer);
-            ImageScrollViewer.ScrollToHorizontalOffset(_panState.HorizontalOffset + (_panState.StartMouse.X - pos.X));
-            ImageScrollViewer.ScrollToVerticalOffset  (_panState.VerticalOffset   + (_panState.StartMouse.Y - pos.Y));
-            return;
-        }
-
-        UpdateImageScrollViewerCursor();
-    }
-
-    private void ImageScrollViewer_MouseLeave(object sender, MouseEventArgs e)
-    {
-        if (_panState.IsPanning)
-        {
-            return;
-        }
-
-        ImageScrollViewer.Cursor = null;
-    }
-
-    private void UpdateImageScrollViewerCursor()
-    {
-        if (_panState.IsPanning)
-        {
-            return;
-        }
-
-        if (!ImageScrollViewer.IsMouseOver)
-        {
-            return;
-        }
-
-        ImageScrollViewer.Cursor = (Keyboard.Modifiers & ModifierKeys.Control) != 0
-            ? Cursors.Hand
-            : null;
+        foreach (var tab in _previewTabs)
+            tab.Reset();
+        ContentTabControl.SelectedItem  = _previewTabs.OrderBy(t => t.Priority).First().TabItem;
+        ContentTabControl.Visibility    = Visibility.Collapsed;
+        NoSelectionPanel.Visibility     = Visibility.Visible;
+        _formatState.Bytes      = null;
+        _formatState.FormatId   = 0;
+        _formatState.FormatName = string.Empty;
     }
 
     private void UpdateStatusBar()
@@ -1577,18 +840,20 @@ public partial class MainWindow : Window
         if (_formatState.Bytes is not { Length: > 0 })
             return;
 
-        Encoding? manuallySelected = _textState.ManuallyChanged
-            && ContentTabControl.SelectedItem == TextTabItem
-            && TextEncodingComboBox.SelectedItem is EncodingItem { Encoding: var enc }
+        var textTab  = _previewTabs.OfType<TextPreviewControl>().FirstOrDefault();
+        var imageTab = _previewTabs.OfType<ImagePreviewControl>().FirstOrDefault();
+
+        Encoding? manuallySelected = textTab?.ManuallyChangedEncoding is { } enc
+            && ContentTabControl.SelectedItem == textTab.TabItem
             ? enc : null;
 
         var ctx = new FormatExportContext(
             Bytes:                    _formatState.Bytes,
             FormatId:                 _formatState.FormatId,
             FormatName:               _formatState.FormatName,
-            AutoDetectedEncoding:     _textState.AutoDetectedEncoding,
+            AutoDetectedEncoding:     textTab?.AutoDetectedEncoding,
             ManuallySelectedEncoding: manuallySelected,
-            ImagePreviewSource:       ImagePreview.Source as BitmapSource);
+            ImagePreviewSource:       imageTab?.PreviewImageSource);
 
         var applicable = _formatExporters.Where(exp => exp.CanExport(ctx)).ToList();
         if (applicable.Count == 0)

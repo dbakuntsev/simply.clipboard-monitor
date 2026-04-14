@@ -1,0 +1,39 @@
+<UserControl x:Class="Simply.ClipboardMonitor.Views.Previews.TextPreviewControl"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid Margin="8">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="8" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+        <DockPanel LastChildFill="True">
+            <StackPanel DockPanel.Dock="Right"
+                        Orientation="Horizontal"
+                        VerticalAlignment="Center">
+                <TextBlock Text="Encoding:"
+                           VerticalAlignment="Center"
+                           Foreground="DimGray"
+                           Margin="0,0,6,0" />
+                <ComboBox x:Name="TextEncodingComboBox"
+                          Width="230"
+                          IsEnabled="False"
+                          SelectionChanged="TextEncodingComboBox_SelectionChanged" />
+            </StackPanel>
+            <TextBlock x:Name="TextStatusTextBlock"
+                       Foreground="DimGray"
+                       VerticalAlignment="Center"
+                       Text="Text preview unavailable for this format." />
+        </DockPanel>
+        <TextBox x:Name="TextContentTextBox"
+                 Grid.Row="2"
+                 IsReadOnly="True"
+                 FontFamily="Consolas"
+                 FontSize="13"
+                 VerticalScrollBarVisibility="Auto"
+                 HorizontalScrollBarVisibility="Auto"
+                 TextWrapping="NoWrap"
+                 AcceptsReturn="True"
+                 AcceptsTab="True" />
+    </Grid>
+</UserControl>

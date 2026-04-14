@@ -1,0 +1,15 @@
+<UserControl x:Class="Simply.ClipboardMonitor.Views.Previews.HtmlPreviewControl"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf">
+    <Grid Margin="8">
+        <TextBlock x:Name="HtmlStatusTextBlock"
+                   Foreground="DimGray"
+                   HorizontalAlignment="Center"
+                   VerticalAlignment="Center"
+                   Text="HTML preview unavailable for this format." />
+        <wv2:WebView2 x:Name="HtmlWebView"
+                      Visibility="Collapsed"
+                      Loaded="HtmlWebView_Loaded" />
+    </Grid>
+</UserControl>

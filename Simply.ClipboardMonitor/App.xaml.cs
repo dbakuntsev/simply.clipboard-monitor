@@ -3,6 +3,7 @@ using Simply.ClipboardMonitor.Common;
 using Simply.ClipboardMonitor.Services;
 using Simply.ClipboardMonitor.Services.Impl;
 using Simply.ClipboardMonitor.Services.Impl.Strategies;
+using Simply.ClipboardMonitor.Views.Previews;
 using System.Windows;
 using System.Windows.Threading;
 
@@ -94,6 +95,16 @@ public partial class App : Application
         services.AddSingleton<IFormatExporter, PngFormatExporter>();
         services.AddSingleton<IFormatExporter, JpegFormatExporter>();
         services.AddSingleton<IFormatExporter, BinaryFormatExporter>();
+
+        // Preview tabs — injected as IEnumerable<IPreviewTab> into MainWindow.
+        // Order is the initial tab order in ContentTabControl; within equal Priority the
+        // first tab in this list is preferred for auto-selection.
+        services.AddSingleton<IPreviewTab, HexPreviewControl>();
+        services.AddSingleton<IPreviewTab, TextPreviewControl>();
+        services.AddSingleton<IPreviewTab, LocalePreviewControl>();
+        services.AddSingleton<IPreviewTab, HtmlPreviewControl>();
+        services.AddSingleton<IPreviewTab, RtfPreviewControl>();
+        services.AddSingleton<IPreviewTab, ImagePreviewControl>();
 
         // Domain services — all stateless or cheaply shared; registered as singletons.
         services.AddSingleton<IClipboardReader,         ClipboardReaderService>();

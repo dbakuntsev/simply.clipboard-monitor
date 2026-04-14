@@ -1,0 +1,22 @@
+<UserControl x:Class="Simply.ClipboardMonitor.Views.Previews.RtfPreviewControl"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid Margin="8">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="8" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+        <TextBlock x:Name="RtfStatusTextBlock"
+                   Foreground="DimGray"
+                   VerticalAlignment="Center"
+                   Text="RTF preview unavailable for this format." />
+        <RichTextBox x:Name="RtfContentBox"
+                     Grid.Row="2"
+                     IsReadOnly="True"
+                     Visibility="Collapsed"
+                     VerticalScrollBarVisibility="Auto"
+                     HorizontalScrollBarVisibility="Auto"
+                     Padding="4" />
+    </Grid>
+</UserControl>

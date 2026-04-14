@@ -387,6 +387,44 @@
                             </Grid>
                         </TabItem>
 
+                        <TabItem x:Name="LocaleTabItem" Header="Locale">
+                            <Grid Margin="8">
+                                <TextBlock x:Name="LocaleStatusTextBlock"
+                                           Foreground="DimGray"
+                                           HorizontalAlignment="Center"
+                                           VerticalAlignment="Center"
+                                           Text="Locale preview unavailable for this format." />
+                                <StackPanel x:Name="LocaleContentPanel"
+                                            Visibility="Collapsed"
+                                            HorizontalAlignment="Center"
+                                            VerticalAlignment="Center">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="LCID"
+                                                   Width="60"
+                                                   Foreground="DimGray" />
+                                        <TextBlock x:Name="LocaleLcidTextBlock"
+                                                   FontFamily="Consolas" />
+                                    </StackPanel>
+                                    <StackPanel x:Name="LocaleTagRow"
+                                                Orientation="Horizontal"
+                                                Margin="0,6,0,0">
+                                        <TextBlock Text="Tag"
+                                                   Width="60"
+                                                   Foreground="DimGray" />
+                                        <TextBlock x:Name="LocaleTagTextBlock" />
+                                    </StackPanel>
+                                    <StackPanel x:Name="LocaleNameRow"
+                                                Orientation="Horizontal"
+                                                Margin="0,6,0,0">
+                                        <TextBlock Text="Name"
+                                                   Width="60"
+                                                   Foreground="DimGray" />
+                                        <TextBlock x:Name="LocaleNameTextBlock" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </Grid>
+                        </TabItem>
+
                         <TabItem x:Name="HtmlTabItem" Header="HTML">
                             <Grid Margin="8">
                                 <TextBlock x:Name="HtmlStatusTextBlock"

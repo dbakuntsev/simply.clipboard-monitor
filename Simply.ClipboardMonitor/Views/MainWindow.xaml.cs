@@ -518,12 +518,15 @@ public partial class MainWindow : Window
 
         ContentTabControl.Visibility = Visibility.Visible;
         NoSelectionPanel.Visibility = Visibility.Collapsed;
-        TextTabItem.IsEnabled  = _textDecoding.IsTextCompatible(item.FormatId, item.Name);
-        HtmlTabItem.IsEnabled  = IsHtmlFormat(item.Name);
-        RtfTabItem.IsEnabled   = IsRtfFormat(item.Name);
-        ImageTabItem.IsEnabled = _imagePreviews.IsImageCompatible(item.FormatId, item.Name);
+        TextTabItem.IsEnabled   = _textDecoding.IsTextCompatible(item.FormatId, item.Name);
+        LocaleTabItem.IsEnabled = item.FormatId == CF_LOCALE;
+        HtmlTabItem.IsEnabled   = IsHtmlFormat(item.Name);
+        RtfTabItem.IsEnabled    = IsRtfFormat(item.Name);
+        ImageTabItem.IsEnabled  = _imagePreviews.IsImageCompatible(item.FormatId, item.Name);
 
         if (!TextTabItem.IsEnabled && ContentTabControl.SelectedItem == TextTabItem)
+            ContentTabControl.SelectedItem = HexTabItem;
+        if (!LocaleTabItem.IsEnabled && ContentTabControl.SelectedItem == LocaleTabItem)
             ContentTabControl.SelectedItem = HexTabItem;
         if (!HtmlTabItem.IsEnabled && ContentTabControl.SelectedItem == HtmlTabItem)
             ContentTabControl.SelectedItem = HexTabItem;
@@ -614,6 +617,7 @@ public partial class MainWindow : Window
         {
             SetHexPreview(bytes);
             UpdateTextPreview(item.FormatId, item.Name, bytes);
+            UpdateLocalePreview(item.FormatId, bytes);
             UpdateHtmlPreview(item.Name, bytes);
             UpdateRtfPreview(item.Name, bytes);
 
@@ -627,6 +631,7 @@ public partial class MainWindow : Window
         {
             SetHexPreviewUnavailable(hexFailureMessage);
             SetTextPreviewUnavailable("Text preview requires byte-addressable clipboard data.");
+            SetLocalePreviewUnavailable("Locale preview requires byte-addressable clipboard data.");
             SetHtmlPreviewUnavailable("HTML preview requires byte-addressable clipboard data.");
             SetRtfPreviewUnavailable("RTF preview requires byte-addressable clipboard data.");
             SetImagePreviewUnavailable("Image preview requires byte-addressable clipboard data.");
@@ -738,6 +743,49 @@ public partial class MainWindow : Window
         TextContentTextBox.Foreground   = SystemColors.WindowTextBrush;
         TextContentTextBox.Text         = string.Empty;
         TextEncodingComboBox.IsEnabled  = false;
+    }
+
+    // ── Locale preview ───────────────────────────────────────────────────────
+
+    private void UpdateLocalePreview(uint formatId, byte[] bytes)
+    {
+        if (formatId != CF_LOCALE)
+        {
+            SetLocalePreviewUnavailable("Locale preview unavailable for this format.");
+            return;
+        }
+        if (bytes.Length < 4)
+        {
+            SetLocalePreviewUnavailable("CF_LOCALE data is too short to decode.");
+            return;
+        }
+
+        var lcid    = BitConverter.ToUInt32(bytes, 0);
+        var lcidHex = $"0x{lcid:X4}";
+
+        string? tag         = null;
+        string? displayName = null;
+        try
+        {
+            var culture = CultureInfo.GetCultureInfo((int)lcid);
+            tag         = culture.Name;
+            displayName = culture.DisplayName;
+        }
+        catch { }
+
+        LocaleStatusTextBlock.Text  = string.Empty;
+        LocaleLcidTextBlock.Text    = lcidHex;
+        LocaleTagTextBlock.Text     = tag ?? string.Empty;
+        LocaleNameTextBlock.Text    = displayName ?? string.Empty;
+        LocaleTagRow.Visibility     = tag != null ? Visibility.Visible : Visibility.Collapsed;
+        LocaleNameRow.Visibility    = displayName != null ? Visibility.Visible : Visibility.Collapsed;
+        LocaleContentPanel.Visibility = Visibility.Visible;
+    }
+
+    private void SetLocalePreviewUnavailable(string message)
+    {
+        LocaleStatusTextBlock.Text    = message;
+        LocaleContentPanel.Visibility = Visibility.Collapsed;
     }
 
     // ── HTML preview ─────────────────────────────────────────────────────────
@@ -1029,13 +1077,15 @@ public partial class MainWindow : Window
     {
         SetHexPreviewUnavailable("Select a clipboard format to preview.");
         SetTextPreviewUnavailable("Text preview unavailable for this format.");
+        SetLocalePreviewUnavailable("Select a clipboard format to preview.");
         SetHtmlPreviewUnavailable("Select a clipboard format to preview.");
         SetRtfPreviewUnavailable("Select a clipboard format to preview.");
         SetImagePreviewUnavailable("Image preview unavailable for this format.");
-        TextTabItem.IsEnabled  = true;
-        HtmlTabItem.IsEnabled  = true;
-        RtfTabItem.IsEnabled   = true;
-        ImageTabItem.IsEnabled = true;
+        TextTabItem.IsEnabled   = true;
+        LocaleTabItem.IsEnabled = true;
+        HtmlTabItem.IsEnabled   = true;
+        RtfTabItem.IsEnabled    = true;
+        ImageTabItem.IsEnabled  = true;
         ContentTabControl.SelectedIndex = 0;
         ContentTabControl.Visibility = Visibility.Collapsed;
         NoSelectionPanel.Visibility  = Visibility.Visible;

@@ -1,5 +1,7 @@
 using Microsoft.Data.Sqlite;
+using Microsoft.Web.WebView2.Core;
 using Microsoft.Win32;
+using System.Text.RegularExpressions;
 using System.Threading.Channels;
 using Simply.ClipboardMonitor.Common;
 using static Simply.ClipboardMonitor.Common.ClipboardFormatConstants;
@@ -149,6 +151,11 @@ public partial class MainWindow : Window
     // Set to true once CheckIntegrity + MigrateSchema have succeeded for the current
     // database file.  Prevents redundant integrity checks on subsequent enable/disable cycles.
     private bool _historyDatabaseReady;
+
+    // HTML preview state
+    private bool    _htmlWebViewReady;
+    private bool    _htmlWebViewInitAttempted;
+    private string? _pendingHtml;
 
     private sealed class HistoryItem
     {
@@ -511,9 +518,12 @@ public partial class MainWindow : Window
         ContentTabControl.Visibility = Visibility.Visible;
         NoSelectionPanel.Visibility = Visibility.Collapsed;
         TextTabItem.IsEnabled  = _textDecoding.IsTextCompatible(item.FormatId, item.Name);
+        HtmlTabItem.IsEnabled  = IsHtmlFormat(item.Name);
         ImageTabItem.IsEnabled = _imagePreviews.IsImageCompatible(item.FormatId, item.Name);
 
         if (!TextTabItem.IsEnabled && ContentTabControl.SelectedItem == TextTabItem)
+            ContentTabControl.SelectedItem = HexTabItem;
+        if (!HtmlTabItem.IsEnabled && ContentTabControl.SelectedItem == HtmlTabItem)
             ContentTabControl.SelectedItem = HexTabItem;
         if (!ImageTabItem.IsEnabled && ContentTabControl.SelectedItem == ImageTabItem)
             ContentTabControl.SelectedItem = HexTabItem;
@@ -600,6 +610,7 @@ public partial class MainWindow : Window
         {
             SetHexPreview(bytes);
             UpdateTextPreview(item.FormatId, item.Name, bytes);
+            UpdateHtmlPreview(item.Name, bytes);
 
             if (_imagePreviews.TryCreatePreview(item.FormatId, item.Name, bytes,
                     out var imagePreview, out var imageFailureMessage) && imagePreview != null)
@@ -611,6 +622,7 @@ public partial class MainWindow : Window
         {
             SetHexPreviewUnavailable(hexFailureMessage);
             SetTextPreviewUnavailable("Text preview requires byte-addressable clipboard data.");
+            SetHtmlPreviewUnavailable("HTML preview requires byte-addressable clipboard data.");
             SetImagePreviewUnavailable("Image preview requires byte-addressable clipboard data.");
         }
     }
@@ -722,12 +734,153 @@ public partial class MainWindow : Window
         TextEncodingComboBox.IsEnabled  = false;
     }
 
+    // ── HTML preview ─────────────────────────────────────────────────────────
+
+    private void UpdateHtmlPreview(string formatName, byte[] bytes)
+    {
+        if (!IsHtmlFormat(formatName))
+        {
+            SetHtmlPreviewUnavailable("HTML preview unavailable for this format.");
+            return;
+        }
+
+        try
+        {
+            // "HTML Format" (CF_HTML) has an ASCII header with byte offsets; strip it first.
+            // For all other HTML formats (text/html, text/_moz_htmlcontext, …) the payload
+            // is a bare HTML string whose encoding is detected by the standard text pipeline,
+            // which handles UTF-16 LE (common on Windows), UTF-8 BOM, and ANSI correctly.
+            var html = TryExtractCfHtml(bytes)
+                    ?? _textDecoding.Decode(0, formatName, bytes).Text
+                    ?? string.Empty;
+            SetHtmlPreview(html);
+        }
+        catch
+        {
+            SetHtmlPreviewUnavailable("Could not decode HTML content.");
+        }
+    }
+
+    private void SetHtmlPreview(string html)
+    {
+        _pendingHtml = null;
+        HtmlStatusTextBlock.Text = string.Empty;
+
+        if (_htmlWebViewReady)
+        {
+            HtmlWebView.Visibility = Visibility.Visible;
+            HtmlWebView.NavigateToString(html);
+        }
+        else
+        {
+            // WebView2 not yet initialised — queue the content.
+            _pendingHtml = html;
+        }
+    }
+
+    private void SetHtmlPreviewUnavailable(string message)
+    {
+        _pendingHtml = null;
+        HtmlStatusTextBlock.Text = message;
+        HtmlWebView.Visibility = Visibility.Collapsed;
+        if (_htmlWebViewReady)
+            HtmlWebView.CoreWebView2.Navigate("about:blank");
+    }
+
+    private async void HtmlWebView_Loaded(object sender, RoutedEventArgs e)
+    {
+        if (_htmlWebViewInitAttempted) return;
+        _htmlWebViewInitAttempted = true;
+        await InitializeHtmlWebViewAsync();
+    }
+
+    private async Task InitializeHtmlWebViewAsync()
+    {
+        try
+        {
+            var userDataFolder = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Simply.ClipboardMonitor", "WebView2");
+
+            var env = await CoreWebView2Environment.CreateAsync(userDataFolder: userDataFolder);
+            await HtmlWebView.EnsureCoreWebView2Async(env);
+
+            var settings = HtmlWebView.CoreWebView2.Settings;
+            settings.IsScriptEnabled              = false;
+            settings.AreDefaultContextMenusEnabled = false;
+            settings.AreDevToolsEnabled           = false;
+            settings.IsStatusBarEnabled           = false;
+
+            // The preview is read-only.  Cancel all user-initiated navigation (link clicks,
+            // anchor jumps, form submits).  NavigationStarting fires for programmatic calls too
+            // (NavigateToString, Navigate("about:blank")), so we must not cancel those —
+            // IsUserInitiated is false for code-driven navigations and true for user gestures.
+            HtmlWebView.CoreWebView2.NewWindowRequested += (_, e) => e.Handled = true;
+            HtmlWebView.CoreWebView2.NavigationStarting += (_, e) =>
+            {
+                if (e.IsUserInitiated) e.Cancel = true;
+            };
+
+            _htmlWebViewReady = true;
+
+            // Apply any HTML that was set while initialisation was in progress.
+            if (_pendingHtml is { } html)
+            {
+                _pendingHtml = null;
+                HtmlWebView.Visibility = Visibility.Visible;
+                HtmlStatusTextBlock.Text = string.Empty;
+                HtmlWebView.NavigateToString(html);
+            }
+        }
+        catch (Exception ex)
+        {
+            ErrorLogger.Log(ex);
+            HtmlStatusTextBlock.Text =
+                "HTML preview is unavailable: WebView2 Runtime not found. " +
+                "Install the Microsoft Edge WebView2 Evergreen Runtime to enable this feature.";
+        }
+    }
+
+    /// <summary>
+    /// Attempts to extract the HTML document portion from a CF_HTML ("HTML Format") payload
+    /// by reading the <c>StartHTML</c> and <c>EndHTML</c> byte offsets in its ASCII header.
+    /// Returns <see langword="null"/> if the format is not CF_HTML or the header cannot be parsed,
+    /// so the caller can fall back to standard encoding-aware text decoding.
+    /// </summary>
+    private static string? TryExtractCfHtml(byte[] bytes)
+    {
+        // CF_HTML header is ASCII; read just enough bytes to locate the offset fields.
+        try
+        {
+            var headerRegion = Encoding.ASCII.GetString(bytes, 0, Math.Min(512, bytes.Length));
+
+            // Bail out quickly if this doesn't look like a CF_HTML payload.
+            if (!headerRegion.StartsWith("Version:", StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            var startMatch = Regex.Match(headerRegion, @"StartHTML:(-?\d+)", RegexOptions.IgnoreCase);
+            var endMatch   = Regex.Match(headerRegion, @"EndHTML:(-?\d+)",   RegexOptions.IgnoreCase);
+
+            if (startMatch.Success && endMatch.Success
+                && int.TryParse(startMatch.Groups[1].Value, out var startHtml)
+                && int.TryParse(endMatch.Groups[1].Value,   out var endHtml)
+                && startHtml >= 0 && endHtml > startHtml && endHtml <= bytes.Length)
+            {
+                return Encoding.UTF8.GetString(bytes, startHtml, endHtml - startHtml);
+            }
+        }
+        catch { }
+        return null;
+    }
+
     private void InitializePreviewState()
     {
         SetHexPreviewUnavailable("Select a clipboard format to preview.");
         SetTextPreviewUnavailable("Text preview unavailable for this format.");
+        SetHtmlPreviewUnavailable("Select a clipboard format to preview.");
         SetImagePreviewUnavailable("Image preview unavailable for this format.");
         TextTabItem.IsEnabled  = true;
+        HtmlTabItem.IsEnabled  = true;
         ImageTabItem.IsEnabled = true;
         ContentTabControl.SelectedIndex = 0;
         ContentTabControl.Visibility = Visibility.Collapsed;

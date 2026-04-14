@@ -4,6 +4,7 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:Simply.ClipboardMonitor"
+        xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
         mc:Ignorable="d"
         Title="Simply Clipboard Monitor" Height="700" Width="1080"
         MinHeight="460" MinWidth="800">
@@ -383,6 +384,19 @@
                                      TextWrapping="NoWrap"
                                      AcceptsReturn="True"
                                      AcceptsTab="True" />
+                            </Grid>
+                        </TabItem>
+
+                        <TabItem x:Name="HtmlTabItem" Header="HTML">
+                            <Grid Margin="8">
+                                <TextBlock x:Name="HtmlStatusTextBlock"
+                                           Foreground="DimGray"
+                                           HorizontalAlignment="Center"
+                                           VerticalAlignment="Center"
+                                           Text="HTML preview unavailable for this format." />
+                                <wv2:WebView2 x:Name="HtmlWebView"
+                                              Visibility="Collapsed"
+                                              Loaded="HtmlWebView_Loaded" />
                             </Grid>
                         </TabItem>
 

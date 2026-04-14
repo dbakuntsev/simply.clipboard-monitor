@@ -90,6 +90,27 @@ internal static class ClipboardFormatConstants
     // ── Format classification helpers ────────────────────────────────────────
 
     /// <summary>
+    /// Format names known to carry renderable HTML content.
+    /// "HTML Format" is the Windows CF_HTML standard (header + full document).
+    /// "text/html" is the MIME type written by browsers and many apps.
+    /// "text/_moz_htmlcontext" is Firefox's full-document ancestor context.
+    /// Formats such as "text/_moz_htmlinfo" that merely contain metadata are excluded.
+    /// </summary>
+    internal static readonly IReadOnlySet<string> HtmlFormatNames =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "HTML Format",
+            "text/html",
+            "text/_moz_htmlcontext",
+        };
+
+    /// <summary>
+    /// Returns true if the format is known to carry renderable HTML content.
+    /// </summary>
+    internal static bool IsHtmlFormat(string formatName) =>
+        HtmlFormatNames.Contains(formatName);
+
+    /// <summary>
     /// Returns true if the format is likely to contain image data, based on its ID and/or name.
     /// Covers HBITMAP and DIB handle types, plus common encoded image format names.
     /// </summary>

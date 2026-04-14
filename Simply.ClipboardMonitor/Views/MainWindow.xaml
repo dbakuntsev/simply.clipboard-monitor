@@ -400,6 +400,27 @@
                             </Grid>
                         </TabItem>
 
+                        <TabItem x:Name="RtfTabItem" Header="RTF">
+                            <Grid Margin="8">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="8" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+                                <TextBlock x:Name="RtfStatusTextBlock"
+                                           Foreground="DimGray"
+                                           VerticalAlignment="Center"
+                                           Text="RTF preview unavailable for this format." />
+                                <RichTextBox x:Name="RtfContentBox"
+                                             Grid.Row="2"
+                                             IsReadOnly="True"
+                                             Visibility="Collapsed"
+                                             VerticalScrollBarVisibility="Auto"
+                                             HorizontalScrollBarVisibility="Auto"
+                                             Padding="4" />
+                            </Grid>
+                        </TabItem>
+
                         <TabItem x:Name="ImageTabItem" Header="Image">
                             <DockPanel Margin="8">
                                 <DockPanel DockPanel.Dock="Top"

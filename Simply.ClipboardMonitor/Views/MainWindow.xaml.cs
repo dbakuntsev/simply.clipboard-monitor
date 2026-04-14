@@ -16,6 +16,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Data;
+using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -519,11 +520,14 @@ public partial class MainWindow : Window
         NoSelectionPanel.Visibility = Visibility.Collapsed;
         TextTabItem.IsEnabled  = _textDecoding.IsTextCompatible(item.FormatId, item.Name);
         HtmlTabItem.IsEnabled  = IsHtmlFormat(item.Name);
+        RtfTabItem.IsEnabled   = IsRtfFormat(item.Name);
         ImageTabItem.IsEnabled = _imagePreviews.IsImageCompatible(item.FormatId, item.Name);
 
         if (!TextTabItem.IsEnabled && ContentTabControl.SelectedItem == TextTabItem)
             ContentTabControl.SelectedItem = HexTabItem;
         if (!HtmlTabItem.IsEnabled && ContentTabControl.SelectedItem == HtmlTabItem)
+            ContentTabControl.SelectedItem = HexTabItem;
+        if (!RtfTabItem.IsEnabled && ContentTabControl.SelectedItem == RtfTabItem)
             ContentTabControl.SelectedItem = HexTabItem;
         if (!ImageTabItem.IsEnabled && ContentTabControl.SelectedItem == ImageTabItem)
             ContentTabControl.SelectedItem = HexTabItem;
@@ -611,6 +615,7 @@ public partial class MainWindow : Window
             SetHexPreview(bytes);
             UpdateTextPreview(item.FormatId, item.Name, bytes);
             UpdateHtmlPreview(item.Name, bytes);
+            UpdateRtfPreview(item.Name, bytes);
 
             if (_imagePreviews.TryCreatePreview(item.FormatId, item.Name, bytes,
                     out var imagePreview, out var imageFailureMessage) && imagePreview != null)
@@ -623,6 +628,7 @@ public partial class MainWindow : Window
             SetHexPreviewUnavailable(hexFailureMessage);
             SetTextPreviewUnavailable("Text preview requires byte-addressable clipboard data.");
             SetHtmlPreviewUnavailable("HTML preview requires byte-addressable clipboard data.");
+            SetRtfPreviewUnavailable("RTF preview requires byte-addressable clipboard data.");
             SetImagePreviewUnavailable("Image preview requires byte-addressable clipboard data.");
         }
     }
@@ -787,6 +793,152 @@ public partial class MainWindow : Window
             HtmlWebView.CoreWebView2.Navigate("about:blank");
     }
 
+    private void UpdateRtfPreview(string formatName, byte[] bytes)
+    {
+        if (!IsRtfFormat(formatName))
+        {
+            SetRtfPreviewUnavailable("RTF preview unavailable for this format.");
+            return;
+        }
+
+        try
+        {
+            var doc = new FlowDocument();
+            using var stream = new MemoryStream(bytes);
+            new TextRange(doc.ContentStart, doc.ContentEnd).Load(stream, DataFormats.Rtf);
+
+            // WPF's RTF importer sets FontFamily from the raw RTF font-table name (e.g.
+            // "Aptos SemiBold").  WPF's font resolver treats that as a family name and
+            // fails to find it, falling back to normal weight.  Walk the document and
+            // split any compound names into base family + explicit weight/style.
+            NormalizeDocumentFonts(doc);
+
+            RtfContentBox.Document = doc;
+            RtfContentBox.Visibility = Visibility.Visible;
+
+            var text = new TextRange(doc.ContentStart, doc.ContentEnd).Text;
+            var charCount = text.Count(c => c != '\r' && c != '\n' && c != '\0');
+            RtfStatusTextBlock.Text = $"Showing {charCount:N0} characters ({bytes.Length:N0} bytes).";
+        }
+        catch
+        {
+            SetRtfPreviewUnavailable("Could not parse RTF content.");
+        }
+    }
+
+    // ── RTF font normalization ───────────────────────────────────────────────
+
+    // Recognized weight tokens and their WPF equivalents.
+    private static readonly Dictionary<string, FontWeight> _rtfWeightTokens =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Thin"]       = FontWeights.Thin,
+            ["ExtraLight"] = FontWeights.ExtraLight,
+            ["UltraLight"] = FontWeights.ExtraLight,
+            ["Light"]      = FontWeights.Light,
+            ["Medium"]     = FontWeights.Medium,
+            ["SemiBold"]   = FontWeights.SemiBold,
+            ["DemiBold"]   = FontWeights.SemiBold,
+            ["Bold"]       = FontWeights.Bold,
+            ["ExtraBold"]  = FontWeights.ExtraBold,
+            ["UltraBold"]  = FontWeights.ExtraBold,
+            ["Black"]      = FontWeights.Black,
+            ["Heavy"]      = FontWeights.Black,
+            ["ExtraBlack"] = FontWeights.ExtraBlack,
+            ["UltraBlack"] = FontWeights.ExtraBlack,
+        };
+
+    // Recognized style tokens and their WPF equivalents.
+    private static readonly Dictionary<string, FontStyle> _rtfStyleTokens =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Italic"]  = FontStyles.Italic,
+            ["Oblique"] = FontStyles.Oblique,
+        };
+
+    /// <summary>
+    /// Walks every <see cref="TextElement"/> in <paramref name="doc"/> that has a locally-set
+    /// <see cref="TextElement.FontFamilyProperty"/> and splits compound GDI face names
+    /// (e.g. "Aptos SemiBold", "Segoe UI Bold Italic") into a base family name plus explicit
+    /// <see cref="TextElement.FontWeight"/> and <see cref="TextElement.FontStyle"/> values.
+    /// </summary>
+    private static void NormalizeDocumentFonts(FlowDocument doc)
+    {
+        var queue = new Queue<TextElement>();
+        foreach (Block b in doc.Blocks) queue.Enqueue(b);
+
+        while (queue.Count > 0)
+        {
+            var elem = queue.Dequeue();
+
+            if (elem.ReadLocalValue(TextElement.FontFamilyProperty) is FontFamily family)
+                TryFixCompoundFontName(elem, family.Source);
+
+            switch (elem)
+            {
+                case Paragraph p:
+                    foreach (Inline i in p.Inlines) queue.Enqueue(i);
+                    break;
+                case Section s:
+                    foreach (Block b in s.Blocks) queue.Enqueue(b);
+                    break;
+                case Span sp:
+                    foreach (Inline i in sp.Inlines) queue.Enqueue(i);
+                    break;
+                case List lst:
+                    foreach (ListItem li in lst.ListItems) queue.Enqueue(li);
+                    break;
+                case ListItem li:
+                    foreach (Block b in li.Blocks) queue.Enqueue(b);
+                    break;
+                case Table tbl:
+                    foreach (TableRowGroup rg in tbl.RowGroups)
+                        foreach (TableRow row in rg.Rows)
+                            foreach (TableCell cell in row.Cells)
+                                foreach (Block b in cell.Blocks) queue.Enqueue(b);
+                    break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Peels recognized weight and style tokens off the end of <paramref name="familySource"/>
+    /// and applies them to <paramref name="element"/> as explicit font properties, then sets the
+    /// family to the remaining base name.  Does nothing if no tokens are recognized.
+    /// </summary>
+    private static void TryFixCompoundFontName(TextElement element, string familySource)
+    {
+        var parts = familySource.Split(' ');
+        if (parts.Length < 2) return;
+
+        FontWeight? weight = null;
+        FontStyle?  style  = null;
+        int end = parts.Length;
+
+        while (end > 1)
+        {
+            var token = parts[end - 1];
+            if (style == null && _rtfStyleTokens.TryGetValue(token, out var s))
+            { style = s; end--; }
+            else if (weight == null && _rtfWeightTokens.TryGetValue(token, out var w))
+            { weight = w; end--; }
+            else break;
+        }
+
+        if (end == parts.Length) return; // no recognized suffix found
+
+        element.FontFamily = new FontFamily(string.Join(" ", parts, 0, end));
+        if (weight.HasValue) element.FontWeight = weight.Value;
+        if (style.HasValue)  element.FontStyle  = style.Value;
+    }
+
+    private void SetRtfPreviewUnavailable(string message)
+    {
+        RtfStatusTextBlock.Text = message;
+        RtfContentBox.Visibility = Visibility.Collapsed;
+        RtfContentBox.Document = new FlowDocument();
+    }
+
     private async void HtmlWebView_Loaded(object sender, RoutedEventArgs e)
     {
         if (_htmlWebViewInitAttempted) return;
@@ -878,9 +1030,11 @@ public partial class MainWindow : Window
         SetHexPreviewUnavailable("Select a clipboard format to preview.");
         SetTextPreviewUnavailable("Text preview unavailable for this format.");
         SetHtmlPreviewUnavailable("Select a clipboard format to preview.");
+        SetRtfPreviewUnavailable("Select a clipboard format to preview.");
         SetImagePreviewUnavailable("Image preview unavailable for this format.");
         TextTabItem.IsEnabled  = true;
         HtmlTabItem.IsEnabled  = true;
+        RtfTabItem.IsEnabled   = true;
         ImageTabItem.IsEnabled = true;
         ContentTabControl.SelectedIndex = 0;
         ContentTabControl.Visibility = Visibility.Collapsed;

@@ -111,6 +111,27 @@ internal static class ClipboardFormatConstants
         HtmlFormatNames.Contains(formatName);
 
     /// <summary>
+    /// Format names known to carry renderable RTF content.
+    /// "Rich Text Format" is the standard Windows clipboard format for RTF.
+    /// "Rich Text Format Without Objects" is the Word variant that strips embedded OLE objects.
+    /// "text/rtf" and "application/rtf" are the MIME types registered by some applications.
+    /// </summary>
+    internal static readonly IReadOnlySet<string> RtfFormatNames =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "Rich Text Format",
+            "Rich Text Format Without Objects",
+            "text/rtf",
+            "application/rtf",
+        };
+
+    /// <summary>
+    /// Returns true if the format is known to carry renderable RTF content.
+    /// </summary>
+    internal static bool IsRtfFormat(string formatName) =>
+        RtfFormatNames.Contains(formatName);
+
+    /// <summary>
     /// Returns true if the format is likely to contain image data, based on its ID and/or name.
     /// Covers HBITMAP and DIB handle types, plus common encoded image format names.
     /// </summary>

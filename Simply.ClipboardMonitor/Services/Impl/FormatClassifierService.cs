@@ -77,13 +77,12 @@ internal sealed class FormatClassifierService : IFormatClassifier
 
     private static FormatCategory ClassifyFormat(uint id, string name)
     {
-        if (IsImageFormat(id, name))                                      return FormatCategory.Image;
-        if (name.Contains("html", StringComparison.OrdinalIgnoreCase))   return FormatCategory.Html;
-        if (name.Contains("rtf",       StringComparison.OrdinalIgnoreCase) ||
-            name.Contains("rich text", StringComparison.OrdinalIgnoreCase)) return FormatCategory.Rtf;
+        if (IsImageFormat(id, name))   return FormatCategory.Image;
+        if (IsHtmlFormat(name))        return FormatCategory.Html;
+        if (IsRtfFormat(name))         return FormatCategory.Rtf;
         if (id == CF_TEXT || id == CF_OEMTEXT || id == CF_UNICODETEXT ||
             name.Contains("text", StringComparison.OrdinalIgnoreCase))   return FormatCategory.Text;
-        if (id == CF_HDROP)                                               return FormatCategory.File;
+        if (id == CF_HDROP)            return FormatCategory.File;
         return FormatCategory.Other;
     }
 

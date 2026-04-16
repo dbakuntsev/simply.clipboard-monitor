@@ -11,6 +11,7 @@ It shows:
 - RTF preview (rendered by WPF's built-in rich text renderer, with compound GDI font-name normalization for correct bold/italic rendering).
 - Image preview (for image-like formats).
 - A scrollable history of past clipboard changes, with per-session format previews.
+- The process that currently owns the clipboard, shown in the status bar with full path and command line in a tooltip.
 
 ![Screenshot of Basic operation, HEX Preview](.github/screenshots/demo1.png)
 ![Screenshot of History Tracking, Image Preview](.github/screenshots/demo2.png)
@@ -221,6 +222,20 @@ When **Start minimized** is ON, the application window does not appear on screen
 
 The **Minimize to System Tray** setting is saved in `%LOCALAPPDATA%\Simply.ClipboardMonitor\preferences.json` along with a flag that tracks whether the first-minimize balloon notification has been shown (so it appears only once ever). **Start at login** state is read directly from the registry on each launch so the UI always reflects the actual system state.
 
+## Clipboard Owner
+
+Whenever the clipboard contents change, the status bar shows which process last wrote to the clipboard, on the right side of the status bar:
+
+```
+Owner: chrome.exe (12345)
+```
+
+Hovering the text reveals a tooltip with three fields:
+
+- **PID** — the numeric process identifier.
+- **Path** — the full executable image path, resolved via `QueryFullProcessImageName`.
+- **Command line** — each argument listed on its own indented line, resolved by reading the process's PEB through `NtQueryInformationProcess` (class 0 for native 64-bit processes; class 26 + WOW64 PEB walk for 32-bit processes running under WOW64). Long arguments wrap at a fixed tooltip width.
+
 ## Error Logs
 
 When the application encounters an unhandled exception, it shows a crash dialog before closing. The dialog displays the full path to the error log file as a clickable link that opens the file directly.
@@ -316,7 +331,7 @@ A **Save As** dialog opens with the file name pre-set to `clipboard-{format_name
 - C#
 - WPF
 - .NET 8 (`net8.0-windows`)
-- Win32 APIs via P/Invoke (`user32.dll`, `kernel32.dll`, `gdi32.dll`, `shell32.dll`)
+- Win32 APIs via P/Invoke (`user32.dll`, `kernel32.dll`, `gdi32.dll`, `shell32.dll`, `ntdll.dll`)
 - SQLite via `Microsoft.Data.Sqlite` (clipboard database persistence and history)
 - ZStandard via `ZstdSharp.Port` (history blob compression)
 - `Microsoft.Extensions.DependencyInjection` (constructor injection throughout)
@@ -339,6 +354,7 @@ A **Save As** dialog opens with the file name pre-set to `clipboard-{format_name
 ### Models
 Data-transfer records and plain model classes with no service dependencies.
 
+- `Models/ClipboardOwnerInfo.cs` — display text and optional tooltip text for the clipboard owner status bar item
 - `Models/ClipboardFormatItem.cs` — format list row model (ordinal, ID, name, content size, filter-highlight flag)
 - `Models/EncodingItem.cs` — encoding display name + `Encoding` pair for the encoding combo box
 - `Models/FormatColumnPreference.cs` — saved column width preference
@@ -354,6 +370,7 @@ Data-transfer records and plain model classes with no service dependencies.
 Public domain service interfaces consumed by the main window and DI wiring.
 
 - `Services/IClipboardFileRepository.cs` — save/load clipboard snapshots to `.clipdb` files
+- `Services/IClipboardOwnerService.cs` — resolve the current clipboard owner HWND to a process name, full path, and command line
 - `Services/IClipboardReader.cs` — enumerate and read current clipboard formats; capture full snapshots
 - `Services/IClipboardWriter.cs` — restore saved formats back onto the clipboard
 - `Services/IFormatClassifier.cs` — classify formats into colored pills and tooltip text for the history list
@@ -380,6 +397,7 @@ Each preview tab is a self-contained `UserControl` that implements `IPreviewTab`
 ### Services/Impl
 Concrete service implementations. All classes are `internal sealed`.
 
+- `Services/Impl/ClipboardOwnerService.cs` — resolves `GetClipboardOwner` HWND → PID → process name via `QueryFullProcessImageName`; reads command line by walking the process PEB via `NtQueryInformationProcess` (native 64-bit path) or the WOW64 PEB (32-bit path); applies a two-tier `OpenProcess` fallback (`PROCESS_QUERY_INFORMATION | PROCESS_VM_READ` → `PROCESS_QUERY_LIMITED_INFORMATION`)
 - `Services/Impl/IHandleReadStrategy.cs` — internal strategy interface for reading a specific clipboard handle type
 - `Services/Impl/IHandleWriteStrategy.cs` — internal strategy interface for restoring a specific clipboard handle type
 - `Services/Impl/ClipboardFileRepository.cs` — `.clipdb` save/load (SQLite, SHA-256 content deduplication)
@@ -415,9 +433,9 @@ Internal utility types with no domain logic.
 - `Common/DisplayHelper.cs` — shared display formatting utilities (human-readable byte-size strings)
 - `Common/HexRow.cs` — single hex-dump display row (offset, hex bytes, ASCII)
 - `Common/HexRowCollection.cs` — lazy-loaded, cached `IReadOnlyList<HexRow>` over a raw byte array
-- `Common/NativeMethods.cs` — Win32 P/Invoke declarations (`user32.dll`, `kernel32.dll`, `gdi32.dll`, `shell32.dll`)
+- `Common/NativeMethods.cs` — Win32 P/Invoke declarations (`user32.dll`, `kernel32.dll`, `gdi32.dll`, `shell32.dll`, `ntdll.dll`)
 - `Common/ShellHelper.cs` — opens a URL in the default browser via `ShellExecute`
-- `Common/Win32Structs.cs` — Win32 GDI structs used by clipboard read/write (`BITMAP`, `BITMAPINFOHEADER`)
+- `Common/Win32Structs.cs` — Win32 structs used by clipboard read/write and process inspection (`BITMAP`, `BITMAPINFOHEADER`, `PROCESS_BASIC_INFORMATION`)
 
 ## Tests
 

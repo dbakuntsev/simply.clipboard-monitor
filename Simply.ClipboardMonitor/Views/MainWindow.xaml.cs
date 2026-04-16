@@ -75,6 +75,7 @@ public partial class MainWindow : Window
     private readonly IClipboardFileRepository _clipboardFiles;
     private readonly IReadOnlyList<IFormatExporter> _formatExporters;
     private readonly IReadOnlyList<IPreviewTab>     _previewTabs;
+    private readonly IClipboardOwnerService         _clipboardOwner;
 
     private readonly ObservableCollection<ClipboardFormatItem> _formats = [];
     private HwndSource? _hwndSource;
@@ -149,6 +150,7 @@ public partial class MainWindow : Window
         IHistoryRepository       history,
         IHistoryMaintenance      historyMaintenance,
         IClipboardFileRepository clipboardFiles,
+        IClipboardOwnerService   clipboardOwner,
         IEnumerable<IFormatExporter> formatExporters,
         IEnumerable<IPreviewTab>     previewTabs)
     {
@@ -160,6 +162,7 @@ public partial class MainWindow : Window
         _history            = history;
         _historyMaintenance = historyMaintenance;
         _clipboardFiles     = clipboardFiles;
+        _clipboardOwner     = clipboardOwner;
         _formatExporters    = formatExporters.ToList().AsReadOnly();
         _previewTabs        = previewTabs.ToList().AsReadOnly();
 
@@ -325,6 +328,7 @@ public partial class MainWindow : Window
         _startAtLogin = newValue;
         AutoStartHelper.SetAutoStart(_startAtLogin);
         AutoStartPill.Visibility = _startAtLogin ? Visibility.Visible : Visibility.Collapsed;
+        UpdateOwnerPillSeparator();
     }
 
     private unsafe void ShowTrayContextMenu()
@@ -474,6 +478,8 @@ public partial class MainWindow : Window
                 FormatListBox.SelectedItem = matching;
             }
         }
+
+        UpdateClipboardOwner();
     }
 
     private void FormatListBox_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -606,6 +612,7 @@ public partial class MainWindow : Window
         }
 
         AutoStartPill.Visibility = _startAtLogin ? Visibility.Visible : Visibility.Collapsed;
+        UpdateOwnerPillSeparator();
     }
 
 
@@ -613,6 +620,42 @@ public partial class MainWindow : Window
     {
         FileStatusText.Text = $"{action}: {Path.GetFileName(path)}";
         FileStatusSeparator.Visibility = Visibility.Visible;
+    }
+
+    // ── Clipboard owner ──────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Resolves the current clipboard owner and updates the status bar item.
+    /// Called every time the live clipboard is refreshed.
+    /// </summary>
+    private void UpdateClipboardOwner()
+    {
+        var info = _clipboardOwner.Resolve();
+        if (info == null)
+        {
+            ClipboardOwnerStatusItem.Visibility = Visibility.Collapsed;
+            ClipboardOwnerTextBlock.Text        = string.Empty;
+            ClipboardOwnerTextBlock.ToolTip     = null;
+        }
+        else
+        {
+            ClipboardOwnerTextBlock.Text        = info.DisplayText;
+            ClipboardOwnerTextBlock.ToolTip     = info.TooltipText;
+            ClipboardOwnerStatusItem.Visibility = Visibility.Visible;
+        }
+        UpdateOwnerPillSeparator();
+    }
+
+    /// <summary>
+    /// Shows the separator between the owner item and the AUTO-START pill only when
+    /// both are visible at the same time.
+    /// </summary>
+    private void UpdateOwnerPillSeparator()
+    {
+        bool ownerVisible    = ClipboardOwnerStatusItem.Visibility == Visibility.Visible;
+        bool autoStartVisible = AutoStartPill.Visibility            == Visibility.Visible;
+        OwnerAutoStartSeparator.Visibility =
+            (ownerVisible && autoStartVisible) ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void RefreshClipboardCommand_Executed(object sender, ExecutedRoutedEventArgs e)

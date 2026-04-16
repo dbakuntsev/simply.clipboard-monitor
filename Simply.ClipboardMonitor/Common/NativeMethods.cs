@@ -178,4 +178,56 @@ internal static partial class NativeMethods
 
     [LibraryImport("kernel32.dll", EntryPoint = "GetModuleHandleW", StringMarshalling = StringMarshalling.Utf16)]
     internal static partial IntPtr GetModuleHandle(string? lpModuleName);
+
+    // ── Clipboard owner / process info ───────────────────────────────────────
+
+    internal const uint PROCESS_QUERY_INFORMATION       = 0x0400;
+    internal const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+    internal const uint PROCESS_VM_READ                 = 0x0010;
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    internal static partial IntPtr GetClipboardOwner();
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    internal static partial uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    internal static partial IntPtr OpenProcess(uint dwDesiredAccess,
+        [MarshalAs(UnmanagedType.Bool)] bool bInheritHandle, uint dwProcessId);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool CloseHandle(IntPtr hObject);
+
+    [LibraryImport("kernel32.dll", EntryPoint = "QueryFullProcessImageNameW",
+        SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool QueryFullProcessImageName(
+        IntPtr hProcess, uint dwFlags,
+        [Out] char[] lpExeName, ref uint lpdwSize);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool IsWow64Process(IntPtr hProcess,
+        [MarshalAs(UnmanagedType.Bool)] out bool Wow64Process);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool ReadProcessMemory(
+        IntPtr hProcess, IntPtr lpBaseAddress,
+        [Out] byte[] lpBuffer, int nSize, out int lpNumberOfBytesRead);
+
+    /// <summary>NtQueryInformationProcess — class 0 (ProcessBasicInformation).</summary>
+    [DllImport("ntdll.dll", EntryPoint = "NtQueryInformationProcess")]
+    internal static extern int NtQueryInformationProcessBasic(
+        IntPtr hProcess, int processInformationClass,
+        ref PROCESS_BASIC_INFORMATION processInformation,
+        int processInformationLength, out int returnLength);
+
+    /// <summary>NtQueryInformationProcess — class 26 (ProcessWow64Information): returns the 32-bit PEB address.</summary>
+    [DllImport("ntdll.dll", EntryPoint = "NtQueryInformationProcess")]
+    internal static extern int NtQueryInformationProcessWow64(
+        IntPtr hProcess, int processInformationClass,
+        ref IntPtr processInformation,
+        int processInformationLength, out int returnLength);
 }

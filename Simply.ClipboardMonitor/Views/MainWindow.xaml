@@ -53,6 +53,16 @@
                                FontWeight="Bold" />
                 </Border>
             </StatusBarItem>
+            <Separator x:Name="OwnerAutoStartSeparator"
+                       DockPanel.Dock="Right"
+                       Visibility="Collapsed" />
+            <StatusBarItem x:Name="ClipboardOwnerStatusItem"
+                           DockPanel.Dock="Right"
+                           Visibility="Collapsed">
+                <TextBlock x:Name="ClipboardOwnerTextBlock"
+                           Foreground="DimGray"
+                           ToolTipService.ShowDuration="30000" />
+            </StatusBarItem>
             <StatusBarItem>
                 <TextBlock x:Name="StatusText" />
             </StatusBarItem>

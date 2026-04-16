@@ -114,6 +114,7 @@ public partial class App : Application
         services.AddSingleton<IFormatClassifier,        FormatClassifierService>();
         services.AddSingleton<IPreferencesService,      PreferencesService>();
         services.AddSingleton<IClipboardFileRepository, ClipboardFileRepository>();
+        services.AddSingleton<IClipboardOwnerService,   ClipboardOwnerService>();
 
         // HistoryRepository implements both IHistoryRepository and IHistoryMaintenance;
         // register the concrete class once and alias both interfaces to the same instance.

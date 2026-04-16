@@ -2018,12 +2018,14 @@ public partial class MainWindow : Window
 
     private void ShowHistoryPanel()
     {
+        LeftPanelGrid.RowDefinitions[0].Height = new GridLength(300);
         LeftPanelGrid.RowDefinitions[1].Height = new GridLength(5);
-        LeftPanelGrid.RowDefinitions[2].Height = new GridLength(180);
+        LeftPanelGrid.RowDefinitions[2].Height = new GridLength(1, GridUnitType.Star);
     }
 
     private void HideHistoryPanel()
     {
+        LeftPanelGrid.RowDefinitions[0].Height = new GridLength(1, GridUnitType.Star);
         LeftPanelGrid.RowDefinitions[1].Height = new GridLength(0);
         LeftPanelGrid.RowDefinitions[2].Height = new GridLength(0);
     }

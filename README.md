@@ -6,6 +6,9 @@ It shows:
 - The list of data formats currently available in the clipboard.
 - Raw bytes as a hex dump (when the format is byte-addressable).
 - Decoded text preview (for text-like formats), with encoding detection and a manual encoding selector.
+- Locale preview (for `CF_LOCALE`): LCID hex value, BCP-47 language tag, and display name.
+- HTML preview (rendered in an embedded WebView2 control).
+- RTF preview (rendered by WPF's built-in rich text renderer, with compound GDI font-name normalization for correct bold/italic rendering).
 - Image preview (for image-like formats).
 - A scrollable history of past clipboard changes, with per-session format previews.
 
@@ -238,8 +241,10 @@ The data directory is also accessible from **File → Settings**, which has a li
 
 ## Preview Behavior
 
+Each preview is displayed in its own tab. When a format is selected, all tabs are updated simultaneously. If the currently active tab becomes unavailable for the selected format, the tab with the lowest priority that can display the format is selected automatically.
+
 ### Hex
-- Available only for byte-addressable clipboard data.
+- Available for all byte-addressable clipboard data (always enabled).
 - Rows show offset, hex bytes, and ASCII view.
 - Uses lazy row materialization to keep large payload display responsive.
 
@@ -253,6 +258,25 @@ The data directory is also accessible from **File → Settings**, which has a li
 - Status line shows character count, non-whitespace character count, and line count. Any of `\r`, `\n`, or `\r\n` counts as a line separator.
 - An **Encoding** drop-down lists all encodings supported by Windows. The auto-detected encoding is pre-selected. Selecting a different encoding re-decodes the raw bytes on the spot; decoding failures are shown inline in red.
 - The manually selected encoding is used when exporting as `.txt` (see below).
+
+### Locale
+- Enabled only for `CF_LOCALE`.
+- Reads the LCID stored as a 32-bit little-endian integer.
+- Displays three lines: the raw LCID as a hex value, the BCP-47 language tag (e.g. `en-US`), and the culture display name (e.g. `English (United States)`).
+- The tag and display name rows are hidden when the LCID is not recognized by the .NET runtime.
+
+### HTML
+- Enabled for HTML-like format names (`HTML Format`, `text/html`, etc.).
+- Rendered inside an embedded **WebView2** control (requires the Microsoft Edge WebView2 Evergreen Runtime to be installed).
+- `HTML Format` (CF_HTML) payloads are parsed using the `StartHTML`/`EndHTML` byte offsets in the ASCII header; other HTML formats are decoded with the standard text pipeline.
+- Scripts, context menus, dev tools, and user-initiated navigation are all disabled — the preview is strictly read-only.
+- If the WebView2 Runtime is not installed, a message is shown in place of the rendered page.
+
+### RTF
+- Enabled for RTF-like format names (`Rich Text Format`, `richtext`, etc.).
+- Rendered using WPF's built-in `RichTextBox` / `FlowDocument` RTF importer.
+- Compound GDI face names (e.g. `Aptos SemiBold`, `Segoe UI Bold Italic`) are automatically split into a base family name plus explicit `FontWeight` and `FontStyle` values after import, so bold and italic styles render correctly even when the WPF font resolver cannot find the compound name as a standalone family.
+- Status line shows character count and raw byte size.
 
 ### Image
 - Attempts image preview for:
@@ -296,6 +320,7 @@ A **Save As** dialog opens with the file name pre-set to `clipboard-{format_name
 - SQLite via `Microsoft.Data.Sqlite` (clipboard database persistence and history)
 - ZStandard via `ZstdSharp.Port` (history blob compression)
 - `Microsoft.Extensions.DependencyInjection` (constructor injection throughout)
+- `Microsoft.Web.WebView2` (HTML preview rendered in an embedded Chromium-based control)
 - `System.Drawing.Common` (system tray icon loading; system warning icon in the corruption dialog)
 
 ## Project Structure
@@ -303,8 +328,8 @@ A **Save As** dialog opens with the file name pre-set to `clipboard-{format_name
 - `Simply.ClipboardMonitor.sln` — solution
 - `Simply.ClipboardMonitor/Simply.ClipboardMonitor.csproj` — app project
 - `Simply.ClipboardMonitor.Tests/Simply.ClipboardMonitor.Tests.csproj` — xUnit test project
-- `Simply.ClipboardMonitor/App.xaml` / `App.xaml.cs` — WPF application entry point; builds the DI container and registers all services, strategies, and exporters
-- `Simply.ClipboardMonitor/Views/MainWindow.xaml` / `MainWindow.xaml.cs` — main window (clipboard listener, format list, previews, history, export, sort, preferences)
+- `Simply.ClipboardMonitor/App.xaml` / `App.xaml.cs` — WPF application entry point; builds the DI container and registers all services, strategies, exporters, and preview tab controls
+- `Simply.ClipboardMonitor/Views/MainWindow.xaml` / `MainWindow.xaml.cs` — main window (clipboard listener, format list, history, export, sort, preferences); preview tabs are populated dynamically from `IEnumerable<IPreviewTab>` injected at construction
 - `Simply.ClipboardMonitor/Views/AboutDialog.xaml` / `AboutDialog.xaml.cs` — About dialog
 - `Simply.ClipboardMonitor/Views/SettingsDialog.xaml` / `SettingsDialog.xaml.cs` — Settings dialog (history limits, database size display, clear history, minimize-to-tray, start-at-login, start-minimized toggles, data directory link)
 - `Simply.ClipboardMonitor/Views/CrashDialog.xaml` / `CrashDialog.xaml.cs` — Crash dialog shown on unhandled exceptions; displays a clickable link to the error log file
@@ -339,7 +364,18 @@ Public domain service interfaces consumed by the main window and DI wiring.
 - `Services/RecoveryResult.cs` — result record for `IHistoryMaintenance.TryRecover()`: success flag, data-loss flag, strategy name, sessions recovered, sessions lost
 - `Services/IImagePreviewService.cs` — create WPF `BitmapSource` previews from raw clipboard bytes
 - `Services/IPreferencesService.cs` — load and save user preferences
+- `Services/IPreviewTab.cs` — common interface for all preview tab controls; exposes `TabItem`, `Priority`, `Update(formatId, name, bytes)`, and `Reset()`
 - `Services/ITextDecodingService.cs` — decode raw bytes as text with auto-detection or manual encoding override
+
+### Views/Previews
+Each preview tab is a self-contained `UserControl` that implements `IPreviewTab`. The main window adds their `TabItem` instances to `ContentTabControl` at startup; no main-window changes are needed to add a new tab.
+
+- `Views/Previews/HexPreviewControl.xaml` / `.xaml.cs` — hex dump tab (always enabled; Priority 0)
+- `Views/Previews/TextPreviewControl.xaml` / `.xaml.cs` — text decoding tab with encoding selector (Priority 1); exposes `AutoDetectedEncoding` and `ManuallyChangedEncoding` for export
+- `Views/Previews/LocalePreviewControl.xaml` / `.xaml.cs` — `CF_LOCALE` decoder tab showing LCID, BCP-47 tag, and display name (Priority 1)
+- `Views/Previews/HtmlPreviewControl.xaml` / `.xaml.cs` — HTML preview tab using an embedded WebView2 control (Priority 2)
+- `Views/Previews/RtfPreviewControl.xaml` / `.xaml.cs` — RTF preview tab using WPF's `RichTextBox`, including compound font-name normalization (Priority 2)
+- `Views/Previews/ImagePreviewControl.xaml` / `.xaml.cs` — image preview tab with fit-scale, zoom slider, and pan (Priority 1); exposes `PreviewImageSource` for export
 
 ### Services/Impl
 Concrete service implementations. All classes are `internal sealed`.

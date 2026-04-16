@@ -639,8 +639,10 @@ public partial class MainWindow : Window
         }
         else
         {
-            ClipboardOwnerTextBlock.Text        = info.DisplayText;
-            ClipboardOwnerTextBlock.ToolTip     = info.TooltipText;
+            ClipboardOwnerTextBlock.Text    = info.DisplayText;
+            ClipboardOwnerTextBlock.ToolTip = info.TooltipText is { } tip
+                ? new TextBlock { Text = tip, TextWrapping = TextWrapping.Wrap, MaxWidth = 650 }
+                : null;
             ClipboardOwnerStatusItem.Visibility = Visibility.Visible;
         }
         UpdateOwnerPillSeparator();

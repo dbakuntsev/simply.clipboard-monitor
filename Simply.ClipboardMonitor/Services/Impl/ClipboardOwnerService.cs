@@ -76,8 +76,64 @@ internal sealed class ClipboardOwnerService : IClipboardOwnerService
         var sb = new StringBuilder();
         sb.Append($"PID: {pid}");
         sb.Append($"\nPath: {path ?? pathError ?? "(unavailable)"}");
-        sb.Append($"\nCommand line: {cmdLine ?? cmdLineError ?? "(unavailable)"}");
+
+        if (cmdLine != null)
+        {
+            sb.Append("\nCommand line:");
+            var args = SplitCommandLineArgs(cmdLine);
+            if (args.Count > 0)
+                foreach (var arg in args)
+                    sb.Append($"\n  {arg}");
+            else
+                sb.Append(" (empty)");
+        }
+        else
+        {
+            sb.Append($"\nCommand line: {cmdLineError ?? "(unavailable)"}");
+        }
+
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Splits a Windows command-line string into individual argument tokens,
+    /// treating spaces and tabs as delimiters except when inside double-quoted regions.
+    /// Handles the common cases without attempting a full CommandLineToArgvW clone.
+    /// </summary>
+    private static List<string> SplitCommandLineArgs(string commandLine)
+    {
+        var args    = new List<string>();
+        var current = new StringBuilder();
+        bool inQuotes = false;
+
+        foreach (char c in commandLine)
+        {
+            switch (c)
+            {
+                case '"':
+                    inQuotes = !inQuotes;
+                    current.Append(c);
+                    break;
+                case ' ':
+                case '\t':
+                    if (inQuotes)
+                        current.Append(c);
+                    else if (current.Length > 0)
+                    {
+                        args.Add(current.ToString());
+                        current.Clear();
+                    }
+                    break;
+                default:
+                    current.Append(c);
+                    break;
+            }
+        }
+
+        if (current.Length > 0)
+            args.Add(current.ToString());
+
+        return args;
     }
 
     // ── Path ─────────────────────────────────────────────────────────────────

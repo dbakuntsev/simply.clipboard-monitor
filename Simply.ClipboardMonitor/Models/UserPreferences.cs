@@ -13,5 +13,6 @@ public sealed class UserPreferences
     public bool TrayBalloonShown       { get; set; }
     public bool StartAtLogin           { get; set; }
     public bool StartMinimized         { get; set; }
+    public bool TextWordWrap           { get; set; }
 }
 

@@ -21,6 +21,25 @@ public sealed partial class TextPreviewControl : UserControl, IPreviewTab
     public TabItem TabItem { get; }
     public int Priority => 1;
 
+    // ── Word wrap ────────────────────────────────────────────────────────────
+
+    /// <summary>Raised when the user toggles the Word wrap checkbox. The argument is the new state.</summary>
+    public event EventHandler<bool>? WordWrapChanged;
+
+    /// <summary>
+    /// Gets or sets the word wrap state. Setting this programmatically updates the checkbox and
+    /// the TextBox without raising <see cref="WordWrapChanged"/>.
+    /// </summary>
+    public bool WordWrap
+    {
+        get => WordWrapCheckBox.IsChecked == true;
+        set
+        {
+            WordWrapCheckBox.IsChecked = value;
+            ApplyWordWrap(value);
+        }
+    }
+
     // ── Export helpers (read by the main window to build FormatExportContext) ─
     public Encoding? AutoDetectedEncoding { get; private set; }
 
@@ -109,6 +128,19 @@ public sealed partial class TextPreviewControl : UserControl, IPreviewTab
             ? _encodingItems.FirstOrDefault(e => e.Encoding.CodePage == preselect.CodePage)
             : null;
         _suppressChange = false;
+    }
+
+    private void WordWrapCheckBox_Click(object sender, RoutedEventArgs e)
+    {
+        bool wrap = WordWrapCheckBox.IsChecked == true;
+        ApplyWordWrap(wrap);
+        WordWrapChanged?.Invoke(this, wrap);
+    }
+
+    private void ApplyWordWrap(bool wrap)
+    {
+        TextContentTextBox.TextWrapping                  = wrap ? TextWrapping.Wrap     : TextWrapping.NoWrap;
+        TextContentTextBox.HorizontalScrollBarVisibility = wrap ? ScrollBarVisibility.Disabled : ScrollBarVisibility.Auto;
     }
 
     private void TextEncodingComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)

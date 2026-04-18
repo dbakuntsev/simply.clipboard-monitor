@@ -1179,6 +1179,14 @@ public partial class MainWindow : Window
         // Always read auto-start from the registry so the UI reflects the actual system state,
         // even if the entry was manually added or removed outside the app.
         _startAtLogin = AutoStartHelper.IsAutoStartEnabled();
+
+        // Apply and subscribe to the word wrap preference for the text preview tab.
+        var textTab = _previewTabs.OfType<TextPreviewControl>().FirstOrDefault();
+        if (textTab != null)
+        {
+            textTab.WordWrap = preferences.TextWordWrap;
+            textTab.WordWrapChanged += (_, _) => SavePreferences();
+        }
     }
 
     private void SavePreferences()
@@ -1196,6 +1204,7 @@ public partial class MainWindow : Window
             TrayBalloonShown     = _trayState.BalloonShown,
             StartAtLogin         = _startAtLogin,
             StartMinimized       = _startMinimized,
+            TextWordWrap         = _previewTabs.OfType<TextPreviewControl>().FirstOrDefault()?.WordWrap ?? false,
         };
 
         _preferences.Save(preferences);

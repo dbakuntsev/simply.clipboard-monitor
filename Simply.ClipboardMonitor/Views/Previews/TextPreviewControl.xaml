@@ -11,6 +11,11 @@
             <StackPanel DockPanel.Dock="Right"
                         Orientation="Horizontal"
                         VerticalAlignment="Center">
+                <CheckBox x:Name="WordWrapCheckBox"
+                          Content="Word wrap"
+                          VerticalAlignment="Center"
+                          Margin="0,0,14,0"
+                          Click="WordWrapCheckBox_Click" />
                 <TextBlock Text="Encoding:"
                            VerticalAlignment="Center"
                            Foreground="DimGray"

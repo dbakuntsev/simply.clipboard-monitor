@@ -179,6 +179,16 @@ internal static partial class NativeMethods
     [LibraryImport("kernel32.dll", EntryPoint = "GetModuleHandleW", StringMarshalling = StringMarshalling.Utf16)]
     internal static partial IntPtr GetModuleHandle(string? lpModuleName);
 
+    // ── Global hotkey ────────────────────────────────────────────────────────
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool UnregisterHotKey(IntPtr hWnd, int id);
+
     // ── Clipboard owner / process info ───────────────────────────────────────
 
     internal const uint PROCESS_QUERY_INFORMATION       = 0x0400;

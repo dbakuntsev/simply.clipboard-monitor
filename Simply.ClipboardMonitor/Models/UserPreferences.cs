@@ -13,6 +13,8 @@ public sealed class UserPreferences
     public bool TrayBalloonShown       { get; set; }
     public bool StartAtLogin           { get; set; }
     public bool StartMinimized         { get; set; }
-    public bool TextWordWrap           { get; set; }
+    public bool   TextWordWrap           { get; set; }
+    public bool   HotkeyEnabled          { get; set; } = true;
+    public string HotkeyBinding          { get; set; } = "Alt+Win+V";
 }
 

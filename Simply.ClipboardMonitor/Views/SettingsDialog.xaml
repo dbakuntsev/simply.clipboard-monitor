@@ -64,6 +64,49 @@
                   Content="Minimize to System Tray"
                   Margin="0,0,0,8" />
 
+        <!-- Hotkey sub-section; grayed out automatically when Minimize to Tray is off. -->
+        <StackPanel x:Name="HotkeyPanel"
+                    IsEnabled="{Binding IsChecked, ElementName=MinimizeToTrayCheckBox}"
+                    Margin="20,0,0,8">
+
+            <CheckBox x:Name="HotkeyEnabledCheckBox"
+                      Content="Enable global hotkey"
+                      Margin="0,0,0,8"
+                      Checked="HotkeyEnabled_Changed"
+                      Unchecked="HotkeyEnabled_Changed" />
+
+            <!-- Capture row; grayed out when hotkey checkbox is off. -->
+            <Grid x:Name="HotkeyBindingPanel"
+                  IsEnabled="{Binding IsChecked, ElementName=HotkeyEnabledCheckBox}"
+                  Margin="20,0,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="8" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0"
+                           Text="Key combination:"
+                           VerticalAlignment="Center" />
+                <TextBox x:Name="HotkeyCaptureBox"
+                         Grid.Column="2"
+                         IsReadOnly="True"
+                         Cursor="Hand"
+                         ToolTip="Click to record a new key combination"
+                         GotKeyboardFocus="HotkeyCaptureBox_GotKeyboardFocus"
+                         LostKeyboardFocus="HotkeyCaptureBox_LostKeyboardFocus"
+                         PreviewKeyDown="HotkeyCaptureBox_PreviewKeyDown"
+                         PreviewKeyUp="HotkeyCaptureBox_PreviewKeyUp" />
+            </Grid>
+
+            <TextBlock x:Name="HotkeyConflictText"
+                       Text="⚠ This hotkey is already in use by another application."
+                       Foreground="#FFCC44"
+                       Margin="20,6,0,0"
+                       TextWrapping="Wrap"
+                       Visibility="Collapsed" />
+
+        </StackPanel>
+
         <CheckBox x:Name="StartAtLoginCheckBox"
                   Content="Start at login"
                   Margin="0,0,0,8" />
@@ -91,7 +134,8 @@
         <StackPanel Orientation="Horizontal"
                     HorizontalAlignment="Right"
                     Margin="0,20,0,0">
-            <Button Content="OK"
+            <Button x:Name="OkButton"
+                    Content="OK"
                     Width="80"
                     IsDefault="True"
                     Click="OkButton_Click"

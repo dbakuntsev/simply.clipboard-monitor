@@ -63,6 +63,22 @@
                            Foreground="DimGray"
                            ToolTipService.ShowDuration="30000" />
             </StatusBarItem>
+            <Separator x:Name="HotkeyStatusSeparator"
+                       DockPanel.Dock="Right"
+                       Visibility="Collapsed" />
+            <StatusBarItem x:Name="HotkeyStatusItem"
+                           DockPanel.Dock="Right"
+                           Visibility="Collapsed">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock x:Name="HotkeyStatusText" Foreground="DimGray" />
+                    <TextBlock x:Name="HotkeyConflictIcon"
+                               Text=" ⚠"
+                               Foreground="#FFCC44"
+                               Visibility="Collapsed"
+                               ToolTipService.ShowDuration="30000"
+                               ToolTip="This hotkey is already in use by another application" />
+                </StackPanel>
+            </StatusBarItem>
             <StatusBarItem>
                 <TextBlock x:Name="StatusText" />
             </StatusBarItem>

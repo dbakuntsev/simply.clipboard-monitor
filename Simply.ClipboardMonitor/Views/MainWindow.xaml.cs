@@ -28,6 +28,8 @@ namespace Simply.ClipboardMonitor;
 public partial class MainWindow : Window
 {
     private const int WM_CLIPBOARDUPDATE = 0x031D;
+    private const int WM_HOTKEY          = 0x0312;
+    private const int HotkeyId           = 1;
     private const string DefaultSortProperty = nameof(ClipboardFormatItem.Ordinal);
 
     public static readonly RoutedUICommand RefreshClipboardCommand = new(
@@ -89,6 +91,12 @@ public partial class MainWindow : Window
     // System tray state
     private const int WM_TRAYICON = 0x8001; // WM_APP + 1
     private TrayState _trayState;
+
+    // Global hotkey state
+    private bool         _hotkeyEnabled = true;
+    private HotkeyBinding _hotkeyBinding = HotkeyBinding.Default;
+    private bool         _hotkeyRegistered;
+    private bool         _hotkeyConflict;
 
     // Auto-start / start-minimized state
     private bool _startAtLogin;
@@ -207,7 +215,12 @@ public partial class MainWindow : Window
         }
 
         if (_trayState.MinimizeToTray)
+        {
             InitializeTrayIcon();
+            if (_hotkeyEnabled)
+                TryRegisterHotkey();
+        }
+        UpdateHotkeyStatusBar();
 
         if (_startMinimized)
         {
@@ -256,6 +269,7 @@ public partial class MainWindow : Window
 
     protected override void OnClosed(EventArgs e)
     {
+        UnregisterHotkey();
         DisposeTrayIcon();
 
         if (_hwndSource != null)
@@ -318,9 +332,17 @@ public partial class MainWindow : Window
     {
         _trayState.MinimizeToTray = newValue;
         if (_trayState.MinimizeToTray)
+        {
             InitializeTrayIcon();
+            RefreshHotkeyRegistration();
+        }
         else
+        {
             DisposeTrayIcon();
+            UnregisterHotkey();
+            _hotkeyConflict = false;
+            UpdateHotkeyStatusBar();
+        }
     }
 
     private void ApplyAutoStartPreference(bool newValue)
@@ -329,6 +351,7 @@ public partial class MainWindow : Window
         AutoStartHelper.SetAutoStart(_startAtLogin);
         AutoStartPill.Visibility = _startAtLogin ? Visibility.Visible : Visibility.Collapsed;
         UpdateOwnerPillSeparator();
+        UpdateHotkeyStatusBar();
     }
 
     private unsafe void ShowTrayContextMenu()
@@ -414,6 +437,89 @@ public partial class MainWindow : Window
         Close();
     }
 
+    // ── Global hotkey ────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Called when the registered global hotkey fires.
+    /// Hides the window if it is visible and active; otherwise shows and activates it.
+    /// </summary>
+    private void OnGlobalHotkey()
+    {
+        if (IsVisible && IsActive)
+        {
+            Hide();
+        }
+        else
+        {
+            if (!IsVisible) Show();
+            WindowState = WindowState.Normal;
+            Activate();
+        }
+    }
+
+    /// <summary>
+    /// Attempts to register the hotkey with Windows.
+    /// Sets <see cref="_hotkeyRegistered"/> and <see cref="_hotkeyConflict"/> accordingly,
+    /// then refreshes the status bar.
+    /// </summary>
+    private void TryRegisterHotkey()
+    {
+        if (_hwndSource == null) return;
+
+        _hotkeyRegistered = NativeMethods.RegisterHotKey(
+            _hwndSource.Handle, HotkeyId,
+            _hotkeyBinding.Modifiers | HotkeyBinding.MOD_NOREPEAT,
+            _hotkeyBinding.VirtualKey);
+
+        _hotkeyConflict = !_hotkeyRegistered;
+        UpdateHotkeyStatusBar();
+    }
+
+    /// <summary>
+    /// Unregisters the hotkey if it is currently registered.  Safe to call when not registered.
+    /// </summary>
+    private void UnregisterHotkey()
+    {
+        if (!_hotkeyRegistered || _hwndSource == null) return;
+        NativeMethods.UnregisterHotKey(_hwndSource.Handle, HotkeyId);
+        _hotkeyRegistered = false;
+    }
+
+    /// <summary>
+    /// Unregisters any existing registration and re-registers using the current
+    /// <see cref="_hotkeyEnabled"/> and <see cref="_hotkeyBinding"/> values.
+    /// No-op when Minimize to Tray is off or the hotkey is disabled.
+    /// </summary>
+    private void RefreshHotkeyRegistration()
+    {
+        UnregisterHotkey();
+        if (_trayState.MinimizeToTray && _hotkeyEnabled)
+            TryRegisterHotkey();
+        else
+        {
+            _hotkeyConflict = false;
+            UpdateHotkeyStatusBar();
+        }
+    }
+
+    /// <summary>
+    /// Updates the hotkey status bar item visibility and conflict indicator.
+    /// The item is shown only when Minimize to Tray is on and the hotkey is enabled.
+    /// </summary>
+    private void UpdateHotkeyStatusBar()
+    {
+        var show = _trayState.MinimizeToTray && _hotkeyEnabled;
+        bool ownerVisible = ClipboardOwnerStatusItem.Visibility == Visibility.Visible;
+        bool autoStartVisible = AutoStartPill.Visibility == Visibility.Visible;
+        HotkeyStatusItem.Visibility      = show ? Visibility.Visible : Visibility.Collapsed;
+        HotkeyStatusSeparator.Visibility = show && (ownerVisible || autoStartVisible) ? Visibility.Visible : Visibility.Collapsed;
+        if (show)
+        {
+            HotkeyStatusText.Text         = $"Hotkey: {_hotkeyBinding}";
+            HotkeyConflictIcon.Visibility = _hotkeyConflict ? Visibility.Visible : Visibility.Collapsed;
+        }
+    }
+
     private static unsafe void CopyToFixed(char* dest, int maxChars, string value)
     {
         int len = Math.Min(value.Length, maxChars - 1);
@@ -435,6 +541,11 @@ public partial class MainWindow : Window
                 if (_isTrackingHistory)
                     CaptureHistorySession(seqAtArrival);
             }
+            handled = true;
+        }
+        else if (msg == WM_HOTKEY && (int)wParam == HotkeyId)
+        {
+            OnGlobalHotkey();
             handled = true;
         }
         else if (msg == WM_TRAYICON)
@@ -613,6 +724,7 @@ public partial class MainWindow : Window
 
         AutoStartPill.Visibility = _startAtLogin ? Visibility.Visible : Visibility.Collapsed;
         UpdateOwnerPillSeparator();
+        UpdateHotkeyStatusBar();
     }
 
 
@@ -646,6 +758,7 @@ public partial class MainWindow : Window
             ClipboardOwnerStatusItem.Visibility = Visibility.Visible;
         }
         UpdateOwnerPillSeparator();
+        UpdateHotkeyStatusBar();
     }
 
     /// <summary>
@@ -749,7 +862,8 @@ public partial class MainWindow : Window
     {
         var dlg = new SettingsDialog(
             _historyMaxEntries, _historyMaxSizeMb, _historyMaintenance,
-            _trayState.MinimizeToTray, _startAtLogin, _startMinimized) { Owner = this };
+            _trayState.MinimizeToTray, _startAtLogin, _startMinimized,
+            _hotkeyEnabled, _hotkeyBinding, _hotkeyConflict) { Owner = this };
         var result = dlg.ShowDialog();
 
         if (dlg.HistoryWasCleared)
@@ -767,8 +881,19 @@ public partial class MainWindow : Window
             _historyMaxEntries = dlg.MaxEntries;
             _historyMaxSizeMb  = dlg.MaxSizeMb;
 
+            // Update hotkey state first so ApplyTraySettings reads the new values.
+            var hotkeySettingsChanged = dlg.HotkeyEnabled != _hotkeyEnabled ||
+                                        dlg.GlobalHotkeyBinding != _hotkeyBinding;
+            if (hotkeySettingsChanged)
+            {
+                _hotkeyEnabled = dlg.HotkeyEnabled;
+                _hotkeyBinding = dlg.GlobalHotkeyBinding;
+            }
+
             if (dlg.MinimizeToSystemTray != _trayState.MinimizeToTray)
                 ApplyTraySettings(dlg.MinimizeToSystemTray);
+            else if (hotkeySettingsChanged)
+                RefreshHotkeyRegistration();
 
             if (dlg.StartAtLogin != _startAtLogin)
                 ApplyAutoStartPreference(dlg.StartAtLogin);
@@ -1162,8 +1287,11 @@ public partial class MainWindow : Window
             _historyMaxEntries    = preferences.HistoryMaxEntries > 0 ? preferences.HistoryMaxEntries : DefaultHistoryMaxEntries;
             _historyMaxSizeMb     = preferences.HistoryMaxSizeMb  > 0 ? preferences.HistoryMaxSizeMb  : DefaultHistoryMaxSizeMb;
             _trayState.MinimizeToTray = preferences.MinimizeToSystemTray;
-            _trayState.BalloonShown     = preferences.TrayBalloonShown;
-            _startMinimized       = preferences.StartMinimized;
+            _trayState.BalloonShown   = preferences.TrayBalloonShown;
+            _startMinimized           = preferences.StartMinimized;
+            _hotkeyEnabled            = preferences.HotkeyEnabled;
+            _hotkeyBinding            = HotkeyBinding.TryParse(preferences.HotkeyBinding, out var hb)
+                                            ? hb : HotkeyBinding.Default;
         }
         catch
         {
@@ -1205,6 +1333,8 @@ public partial class MainWindow : Window
             StartAtLogin         = _startAtLogin,
             StartMinimized       = _startMinimized,
             TextWordWrap         = _previewTabs.OfType<TextPreviewControl>().FirstOrDefault()?.WordWrap ?? false,
+            HotkeyEnabled        = _hotkeyEnabled,
+            HotkeyBinding        = _hotkeyBinding.ToString(),
         };
 
         _preferences.Save(preferences);

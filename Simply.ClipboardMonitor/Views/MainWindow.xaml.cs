@@ -109,6 +109,9 @@ public partial class MainWindow : Window
     private string                    _historyFilter = string.Empty;
     private CancellationTokenSource?  _filterCts;
 
+    // Drag-from-history state
+    private System.Windows.Point? _historyDragStartPoint;
+
     // History limits (kept in sync with UserPreferences)
     private const int DefaultHistoryMaxEntries = 100;
     private const int DefaultHistoryMaxSizeMb  = 100;
@@ -199,6 +202,9 @@ public partial class MainWindow : Window
         UpdateStatusBar();
         ApplyFormatColumnPreferences();
         FormatListBox.AddHandler(GridViewColumnHeader.ClickEvent, new RoutedEventHandler(FormatListBox_OnColumnHeaderClick));
+        HistoryListView.PreviewMouseLeftButtonDown += HistoryListView_PreviewMouseLeftButtonDown;
+        HistoryListView.PreviewMouseMove           += HistoryListView_PreviewMouseMove;
+        HistoryListView.MouseLeftButtonUp          += (_, _) => _historyDragStartPoint = null;
         ApplyFormatSort();
         InitializePreviewState();
     }
@@ -2066,6 +2072,276 @@ public partial class MainWindow : Window
                 return false;
         }
         return true;
+    }
+
+    private void HistoryListView_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        var item = FindVisualAncestor<ListViewItem>(e.OriginalSource as DependencyObject);
+        if (item?.DataContext is HistoryItem historyItem)
+        {
+            _historyDragStartPoint = e.GetPosition(HistoryListView);
+            HistoryListView.SelectedItem = historyItem;
+        }
+        else
+        {
+            _historyDragStartPoint = null;
+        }
+    }
+
+    private void HistoryListView_PreviewMouseMove(object sender, MouseEventArgs e)
+    {
+        if (e.LeftButton != MouseButtonState.Pressed || _historyDragStartPoint == null)
+            return;
+
+        var current = e.GetPosition(HistoryListView);
+        if (Math.Abs(current.X - _historyDragStartPoint.Value.X) < SystemParameters.MinimumHorizontalDragDistance &&
+            Math.Abs(current.Y - _historyDragStartPoint.Value.Y) < SystemParameters.MinimumVerticalDragDistance)
+            return;
+
+        _historyDragStartPoint = null;
+
+        if (HistoryListView.SelectedItem is not HistoryItem entry)
+            return;
+
+        List<FormatSnapshot> snapshots;
+        try   { snapshots = _history.LoadSessionFormats(entry.SessionId); }
+        catch { return; }
+
+        var dataObj = TryBuildDragDataObject(snapshots);
+        if (dataObj == null) return;
+
+        // Suppress ListView selection-drag and release WPF capture before DoDragDrop.
+        e.Handled = true;
+        Mouse.Capture(null);
+        DragDrop.DoDragDrop(HistoryListView, dataObj, DragDropEffects.Copy);
+    }
+
+    /// <summary>
+    /// Builds a WPF DataObject from the given history snapshots, mapping each recognised
+    /// clipboard format to the corresponding WPF DataFormats entry.
+    /// Returns null when no supported format has any data.
+    /// </summary>
+    private static System.Windows.DataObject? TryBuildDragDataObject(List<FormatSnapshot> snapshots)
+    {
+        var obj = new System.Windows.DataObject();
+        bool hasAny = false, hasText = false, hasHtml = false, hasRtf = false, hasFiles = false;
+        bool hasDib = false, hasBitmapSource = false, hasPng = false;
+
+        foreach (var snap in snapshots)
+        {
+            if (snap.Data is not { Length: > 0 }) continue;
+
+            // ── Text (CF_UNICODETEXT preferred; fall back to CF_TEXT / CF_OEMTEXT) ─
+            if (!hasText)
+            {
+                string? text = null;
+                if (snap.FormatId == CF_UNICODETEXT)
+                    text = Encoding.Unicode.GetString(snap.Data).TrimEnd('\0');
+                else if (snap.FormatId == CF_TEXT)
+                    text = Encoding.Default.GetString(snap.Data).TrimEnd('\0');
+                else if (snap.FormatId == CF_OEMTEXT)
+                    text = Encoding.GetEncoding((int)NativeMethods.GetOEMCP()).GetString(snap.Data).TrimEnd('\0');
+
+                if (text is { Length: > 0 })
+                {
+                    // DataFormats.StringFormat ("System.String") is required to activate
+                    // WPF's synonym mapping so that CF_UNICODETEXT and CF_TEXT are both
+                    // enumerated in the native OLE IDataObject.
+                    obj.SetData(DataFormats.StringFormat, text);
+                    obj.SetData(DataFormats.UnicodeText,  text);
+                    obj.SetData(DataFormats.Text,         text);
+                    hasText = hasAny = true;
+                }
+            }
+
+            // ── HTML ────────────────────────────────────────────────────────
+            if (!hasHtml && IsHtmlFormat(snap.FormatName))
+            {
+                var html = DecodeHtmlBytes(snap.FormatName, snap.Data);
+                if (html.Length > 0)
+                { obj.SetData(DataFormats.Html, html); hasHtml = hasAny = true; }
+            }
+
+            // ── RTF ─────────────────────────────────────────────────────────
+            if (!hasRtf && IsRtfFormat(snap.FormatName))
+            {
+                var rtf = Encoding.ASCII.GetString(snap.Data).TrimEnd('\0');
+                if (rtf.Length > 0)
+                { obj.SetData(DataFormats.Rtf, rtf); hasRtf = hasAny = true; }
+            }
+
+            // ── File drop (CF_HDROP) ────────────────────────────────────────
+            if (!hasFiles && snap.FormatId == CF_HDROP)
+            {
+                var files = ParseDropFiles(snap.Data);
+                if (files.Length > 0)
+                { obj.SetData(DataFormats.FileDrop, files); hasFiles = hasAny = true; }
+            }
+
+            // ── CF_DIB / CF_DIBV5: raw HGLOBAL bytes as MemoryStream ────────
+            // Most native apps (Word, Paint, etc.) accept CF_DIB more reliably than CF_BITMAP.
+            if (!hasDib && snap.FormatId is CF_DIB or CF_DIBV5)
+            {
+                obj.SetData(DataFormats.Dib, new MemoryStream(snap.Data));
+                hasDib = hasAny = true;
+                // Also produce a frozen BitmapSource for WPF/modern apps (CF_BITMAP).
+                if (!hasBitmapSource)
+                {
+                    var bmp = TryDecodeDibToBitmapSource(snap.Data);
+                    if (bmp != null)
+                    { obj.SetData(DataFormats.Bitmap, bmp); hasBitmapSource = true; }
+                }
+            }
+
+            // ── CF_BITMAP (stored as DIB bytes via GetDIBits) ───────────────
+            if (!hasBitmapSource && HBitmapFormats.Contains(snap.FormatId))
+            {
+                var bmp = TryDecodeDibToBitmapSource(snap.Data);
+                if (bmp != null)
+                {
+                    obj.SetData(DataFormats.Bitmap, bmp);
+                    hasBitmapSource = hasAny = true;
+                    // Also expose as CF_DIB for native apps that prefer it.
+                    if (!hasDib)
+                    { obj.SetData(DataFormats.Dib, new MemoryStream(snap.Data)); hasDib = true; }
+                }
+            }
+
+            // ── PNG ─────────────────────────────────────────────────────────
+            // Apps like Office and Chrome can consume a "PNG" custom format directly.
+            if (!hasPng && (string.Equals(snap.FormatName, "PNG",       StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(snap.FormatName, "image/png", StringComparison.OrdinalIgnoreCase)))
+            {
+                obj.SetData(snap.FormatName, new MemoryStream(snap.Data));
+                hasPng = hasAny = true;
+            }
+        }
+
+        return hasAny ? obj : null;
+    }
+
+    /// <summary>
+    /// Parses a CF_HDROP HGLOBAL byte array (DROPFILES header + file list) into
+    /// an array of file paths.
+    /// </summary>
+    private static string[] ParseDropFiles(byte[] data)
+    {
+        // DROPFILES: pFiles(4) + POINT(8) + fNC(4) + fWide(4) = 20 bytes minimum
+        if (data.Length < 20) return [];
+        int  pFiles = BitConverter.ToInt32(data, 0);
+        bool fWide  = BitConverter.ToInt32(data, 16) != 0;
+        if (pFiles < 0 || pFiles >= data.Length) return [];
+
+        var files = new List<string>();
+        if (fWide)
+        {
+            // Null-terminated UTF-16 strings; list ends at double-null
+            for (int i = pFiles; i + 1 < data.Length; )
+            {
+                int start = i;
+                while (i + 1 < data.Length && (data[i] | data[i + 1]) != 0) i += 2;
+                if (i == start) break;  // double-null terminator
+                files.Add(Encoding.Unicode.GetString(data, start, i - start));
+                i += 2;
+            }
+        }
+        else
+        {
+            // Null-terminated ANSI strings; list ends at double-null
+            for (int i = pFiles; i < data.Length; )
+            {
+                int start = i;
+                while (i < data.Length && data[i] != 0) i++;
+                if (i == start) break;
+                files.Add(Encoding.Default.GetString(data, start, i - start));
+                i++;
+            }
+        }
+        return [.. files];
+    }
+
+    /// <summary>
+    /// Decodes a raw DIB byte array (BITMAPINFOHEADER + palette + pixels, as stored for
+    /// CF_DIB / CF_DIBV5 / CF_BITMAP) into a <see cref="BitmapSource"/>.
+    /// Returns null on any failure.
+    /// </summary>
+    private static BitmapSource? TryDecodeDibToBitmapSource(byte[] data)
+    {
+        try
+        {
+            if (data.Length < 40) return null;  // minimum BITMAPINFOHEADER size
+            int biSize     = BitConverter.ToInt32(data,  0);
+            int biWidth    = BitConverter.ToInt32(data,  4);
+            int biBitCount = BitConverter.ToInt16(data, 14);
+            int biCompr    = BitConverter.ToInt32(data, 16);
+            int biClrUsed  = BitConverter.ToInt32(data, 32);
+            if (biSize < 40 || biWidth <= 0) return null;
+
+            // BI_BITFIELDS (3) stores 3 DWORD colour masks instead of a palette.
+            int paletteCount = biBitCount <= 8
+                ? (biClrUsed > 0 ? biClrUsed : 1 << biBitCount)
+                : biCompr == 3 ? 3 : 0;
+
+            // Prepend BITMAPFILEHEADER (14 bytes) to make a valid .bmp stream.
+            int pixelOffset = 14 + biSize + paletteCount * 4;
+            var bmpFile     = new byte[14 + data.Length];
+            bmpFile[0] = (byte)'B'; bmpFile[1] = (byte)'M';
+            BitConverter.GetBytes(bmpFile.Length).CopyTo(bmpFile,  2);  // bfSize
+            BitConverter.GetBytes(pixelOffset).CopyTo(bmpFile,    10);  // bfOffBits
+            data.CopyTo(bmpFile, 14);
+
+            using var ms  = new MemoryStream(bmpFile);
+            var decoder   = BitmapDecoder.Create(ms, BitmapCreateOptions.None, BitmapCacheOption.OnLoad);
+            if (decoder.Frames.Count == 0) return null;
+            var frame = decoder.Frames[0];
+            frame.Freeze();  // required: DragDrop marshals the BitmapSource on a different thread
+            return frame;
+        }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// Decodes raw HTML clipboard bytes to a string, handling UTF-8, UTF-16 LE/BE (with or
+    /// without BOM).  "text/html" from Chromium browsers arrives as UTF-16 LE without a BOM.
+    /// </summary>
+    private static string DecodeHtmlBytes(string formatName, byte[] data)
+    {
+        // Explicit BOM takes priority over format name.
+        if (data.Length >= 2 && data[0] == 0xFF && data[1] == 0xFE)
+            return Encoding.Unicode.GetString(data, 2, data.Length - 2).TrimEnd('\0');
+        if (data.Length >= 2 && data[0] == 0xFE && data[1] == 0xFF)
+            return Encoding.BigEndianUnicode.GetString(data, 2, data.Length - 2).TrimEnd('\0');
+        if (data.Length >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF)
+            return Encoding.UTF8.GetString(data, 3, data.Length - 3).TrimEnd('\0');
+
+        // "HTML Format" (Windows CF_HTML) is always UTF-8 per spec.
+        if (string.Equals(formatName, "HTML Format", StringComparison.OrdinalIgnoreCase))
+            return Encoding.UTF8.GetString(data).TrimEnd('\0');
+
+        // "text/html" from Chromium is UTF-16 LE without a BOM.
+        // Sniff: in UTF-16 LE, the high byte of every ASCII character is 0x00.
+        // Sample the first few code-unit pairs; a majority of 0x00 high bytes is conclusive.
+        if (data.Length >= 4)
+        {
+            int limit = Math.Min(data.Length / 2, 8);
+            int nullsAtOdd = 0;
+            for (int i = 0; i < limit; i++)
+                if (data[2 * i + 1] == 0x00) nullsAtOdd++;
+            if (nullsAtOdd > limit / 2)
+                return Encoding.Unicode.GetString(data).TrimEnd('\0');
+        }
+
+        return Encoding.UTF8.GetString(data).TrimEnd('\0');
+    }
+
+    private static T? FindVisualAncestor<T>(DependencyObject? obj) where T : DependencyObject
+    {
+        while (obj != null)
+        {
+            if (obj is T t) return t;
+            obj = VisualTreeHelper.GetParent(obj);
+        }
+        return null;
     }
 
     private void HistoryLoadIntoClipboard_Click(object sender, RoutedEventArgs e)

@@ -10,7 +10,7 @@ It shows:
 - HTML preview (rendered in an embedded WebView2 control).
 - RTF preview (rendered by WPF's built-in rich text renderer, with compound GDI font-name normalization for correct bold/italic rendering).
 - Image preview (for image-like formats).
-- A scrollable history of past clipboard changes, with per-session format previews.
+- A scrollable history of past clipboard changes, with per-session format previews and drag-and-drop support for transferring history entries directly into other applications.
 - The process that currently owns the clipboard, shown in the status bar with full path and command line in a tooltip.
 
 ![Screenshot of Basic operation, HEX Preview](.github/screenshots/demo1.png)
@@ -123,6 +123,24 @@ Clicking a row retrieves that session's format snapshots for preview, exactly as
 
 The number of entries currently visible is shown in the **Clipboard History** group header (right-aligned). When a filter is active it reads *N items (M total)*, where *M* is the total unfiltered session count and *N* is the number of matched entries.
 
+### Drag-and-drop from history
+
+A history entry can be dragged from the history list and dropped directly into another application — no need to first load it back onto the clipboard.
+
+The WPF `DataObject` placed on the drag session includes all recognised formats from the selected entry:
+
+| Format | Source |
+|--------|--------|
+| Unicode / plain text | `CF_UNICODETEXT`, `CF_TEXT`, or `CF_OEMTEXT` |
+| HTML | `HTML Format`, `text/html`, or other HTML-like format names |
+| RTF | `Rich Text Format` or other RTF-like format names |
+| File drop | `CF_HDROP` (DROPFILES) |
+| DIB image | `CF_DIB` / `CF_DIBV5` raw bytes (for native apps such as Word or Paint) |
+| Bitmap | `CF_BITMAP` / `CF_DSPBITMAP` — decoded to a frozen `BitmapSource` (for WPF/modern apps) |
+| PNG | `PNG` or `image/png` custom formats |
+
+Only formats that have captured data are included. If no supported format has data, the drag is suppressed.
+
 ### History entry actions
 
 Right-clicking a row in the history list opens a context menu:
@@ -201,6 +219,21 @@ Open **File → Settings** and check **Minimize to System Tray**. When the setti
   - **Exit** — closes the application immediately without hiding to the tray.
 - **File → Exit** always exits the application, regardless of the setting.
 
+### Global Hotkey
+
+When **Minimize to System Tray** is ON, a configurable global hotkey can be used to show, hide, or bring the main window to the foreground from anywhere on the desktop — even when another application has focus.
+
+Open **File → Settings** to configure the hotkey:
+
+- Check **Enable global hotkey** to activate it.
+- Click the key-capture field and press the desired key combination to record it. The combination must include at least one of Alt, Ctrl, or Win; bare keys and Shift-only combinations are rejected.
+- Press **Escape** while the field has focus to cancel the capture and keep the existing binding.
+- The default binding is **Alt+Win+V**.
+
+If the chosen combination is already registered by another application, a conflict warning is shown in the Settings dialog. The hotkey is automatically unregistered while the Settings dialog is open to avoid interfering with key capture.
+
+Pressing the hotkey when the window is hidden shows and activates it; pressing it when the window is already in the foreground hides it to the tray.
+
 ## Auto-Start
 
 Open **File → Settings** to configure how the application starts.
@@ -273,6 +306,7 @@ Each preview is displayed in its own tab. When a format is selected, all tabs ar
 - Status line shows character count, non-whitespace character count, and line count. Any of `\r`, `\n`, or `\r\n` counts as a line separator.
 - An **Encoding** drop-down lists all encodings supported by Windows. The auto-detected encoding is pre-selected. Selecting a different encoding re-decodes the raw bytes on the spot; decoding failures are shown inline in red.
 - The manually selected encoding is used when exporting as `.txt` (see below).
+- A **Word wrap** checkbox toggles line wrapping in the text view. The setting is persisted in `preferences.json` and restored on the next launch.
 
 ### Locale
 - Enabled only for `CF_LOCALE`.
@@ -364,7 +398,7 @@ Data-transfer records and plain model classes with no service dependencies.
 - `Models/SavedClipboardFormat.cs` — format row stored in / loaded from a `.clipdb` file
 - `Models/SessionEntry.cs` — one row from the history sessions table
 - `Models/TextDecodeResult.cs` — result of a single text-decode attempt (text, encoding, success/failure)
-- `Models/UserPreferences.cs` — top-level user preferences (sort property/direction, monitor/history settings, limits, minimize-to-tray, start-at-login, start-minimized toggles, balloon-shown flag)
+- `Models/UserPreferences.cs` — top-level user preferences (sort property/direction, monitor/history settings, limits, minimize-to-tray, start-at-login, start-minimized toggles, balloon-shown flag, text word-wrap state, global hotkey enabled flag and binding string)
 
 ### Services
 Public domain service interfaces consumed by the main window and DI wiring.
@@ -428,6 +462,7 @@ One class per clipboard handle type or export file format. All classes are `inte
 Internal utility types with no domain logic.
 
 - `Common/AutoStartHelper.cs` — reads and writes the Windows current-user auto-start registry key
+- `Common/HotkeyBinding.cs` — immutable value type representing a global hotkey (modifier flags + virtual key code); includes `ToString` / `TryParse` for preferences serialisation and `FormatModifiers` for the live capture display
 - `Common/ErrorLogger.cs` — thread-safe rolling logger; `Log(Exception)` for errors and `LogInfo(string)` for informational events; writes to dated `.txt` files under `%LOCALAPPDATA%\Simply.ClipboardMonitor\`, retaining the three most recent files
 - `Common/ClipboardFormatConstants.cs` — Windows clipboard format ID constants (`CF_TEXT`, `CF_BITMAP`, etc.), handle-type classification sets, and shared image-format detection
 - `Common/DisplayHelper.cs` — shared display formatting utilities (human-readable byte-size strings)

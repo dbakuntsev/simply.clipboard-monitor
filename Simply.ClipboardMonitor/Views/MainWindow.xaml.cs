@@ -366,6 +366,30 @@ public partial class MainWindow : Window
         UpdateHotkeyStatusBar();
     }
 
+    private enum TrayCmd : uint
+    {
+        ShowHideWindow        = 1,
+        Exit                  = 2,
+        Load                  = 10,
+        Save                  = 11,
+        SaveAs                = 12,
+        ExportSelectedFormat  = 13,
+        Settings              = 14,
+        Clear                 = 20,
+        Refresh               = 21,
+        MonitorChanges        = 22,
+        TrackHistory          = 23,
+        Resume                = 24,
+        Pause1m               = 30,
+        Pause5m               = 31,
+        Pause10m              = 32,
+        Pause30m              = 33,
+        Pause1h               = 34,
+        SubmitFeedback        = 40,
+        About                 = 41,
+        PausedUntilLabel      = 50,
+    }
+
     private unsafe void ShowTrayContextMenu()
     {
         if (_hwndSource == null)
@@ -375,11 +399,76 @@ public partial class MainWindow : Window
         if (hMenu == IntPtr.Zero)
             return;
 
+        static UIntPtr Cmd(TrayCmd c) => (UIntPtr)(uint)c;
+
         try
         {
-            NativeMethods.AppendMenu(hMenu, NativeMethods.MF_STRING,    new UIntPtr(1), "Show/Hide Window");
-            NativeMethods.AppendMenu(hMenu, NativeMethods.MF_SEPARATOR, UIntPtr.Zero,   null);
-            NativeMethods.AppendMenu(hMenu, NativeMethods.MF_STRING,    new UIntPtr(2), "Exit");
+            // ── Show/Hide Window (top) ───────────────────────────────────────
+            NativeMethods.AppendMenu(hMenu, NativeMethods.MF_STRING,    Cmd(TrayCmd.ShowHideWindow), "Show/Hide Window");
+            NativeMethods.AppendMenu(hMenu, NativeMethods.MF_SEPARATOR, UIntPtr.Zero,                null);
+
+            // ── File submenu ─────────────────────────────────────────────────
+            var hFileMenu = NativeMethods.CreatePopupMenu();
+            NativeMethods.AppendMenu(hFileMenu, NativeMethods.MF_STRING, Cmd(TrayCmd.Load),   "Load...");
+            NativeMethods.AppendMenu(hFileMenu, NativeMethods.MF_STRING, Cmd(TrayCmd.Save),   "Save");
+            NativeMethods.AppendMenu(hFileMenu, NativeMethods.MF_STRING, Cmd(TrayCmd.SaveAs), "Save As...");
+            NativeMethods.AppendMenu(hFileMenu, NativeMethods.MF_SEPARATOR, UIntPtr.Zero, null);
+            NativeMethods.AppendMenu(hFileMenu,
+                NativeMethods.MF_STRING | (_formatState.Bytes is { Length: > 0 } ? 0u : NativeMethods.MF_GRAYED),
+                Cmd(TrayCmd.ExportSelectedFormat), "Export Selected Format...");
+            NativeMethods.AppendMenu(hFileMenu, NativeMethods.MF_SEPARATOR, UIntPtr.Zero, null);
+            NativeMethods.AppendMenu(hFileMenu, NativeMethods.MF_STRING, Cmd(TrayCmd.Settings), "Settings...");
+            NativeMethods.AppendMenu(hMenu, NativeMethods.MF_POPUP, (UIntPtr)(nuint)(nint)hFileMenu, "File");
+
+            // ── Clipboard submenu ────────────────────────────────────────────
+            var hClipboardMenu = NativeMethods.CreatePopupMenu();
+            NativeMethods.AppendMenu(hClipboardMenu,
+                NativeMethods.MF_STRING | (NativeMethods.CountClipboardFormats() > 0 ? 0u : NativeMethods.MF_GRAYED),
+                Cmd(TrayCmd.Clear), "Clear");
+            NativeMethods.AppendMenu(hClipboardMenu,
+                NativeMethods.MF_STRING | (_isMonitoring ? NativeMethods.MF_GRAYED : 0u),
+                Cmd(TrayCmd.Refresh), "Refresh");
+            NativeMethods.AppendMenu(hClipboardMenu,
+                NativeMethods.MF_STRING | (_isMonitoring ? NativeMethods.MF_CHECKED : 0u),
+                Cmd(TrayCmd.MonitorChanges), "Monitor Changes");
+            NativeMethods.AppendMenu(hClipboardMenu,
+                NativeMethods.MF_STRING | (_isTrackingHistory ? NativeMethods.MF_CHECKED : 0u)
+                                        | (_isMonitoring ? 0u : NativeMethods.MF_GRAYED),
+                Cmd(TrayCmd.TrackHistory), "Track History");
+            NativeMethods.AppendMenu(hMenu, NativeMethods.MF_POPUP, (UIntPtr)(nuint)(nint)hClipboardMenu, "Clipboard");
+
+            // ── Help submenu ─────────────────────────────────────────────────
+            var hHelpMenu = NativeMethods.CreatePopupMenu();
+            NativeMethods.AppendMenu(hHelpMenu, NativeMethods.MF_STRING, Cmd(TrayCmd.SubmitFeedback), "Submit Feedback");
+            NativeMethods.AppendMenu(hHelpMenu, NativeMethods.MF_STRING, Cmd(TrayCmd.About),          "About");
+            NativeMethods.AppendMenu(hMenu, NativeMethods.MF_POPUP, (UIntPtr)(nuint)(nint)hHelpMenu, "Help");
+
+            // ── Pause / Resume (top-level) ───────────────────────────────────
+            NativeMethods.AppendMenu(hMenu, NativeMethods.MF_SEPARATOR, UIntPtr.Zero, null);
+            if (_isPaused)
+            {
+                var pausedUntil = _pauseUntil.Date == DateTime.Today
+                    ? _pauseUntil.ToString("t")
+                    : _pauseUntil.ToString("g");
+                NativeMethods.AppendMenu(hMenu, NativeMethods.MF_STRING | NativeMethods.MF_GRAYED,
+                    Cmd(TrayCmd.PausedUntilLabel), $"Paused until {pausedUntil}");
+            }
+            var hPauseMenu = NativeMethods.CreatePopupMenu();
+            NativeMethods.AppendMenu(hPauseMenu, NativeMethods.MF_STRING, Cmd(TrayCmd.Pause1m),  _isPaused ? "+1 minute"   : "1 minute");
+            NativeMethods.AppendMenu(hPauseMenu, NativeMethods.MF_STRING, Cmd(TrayCmd.Pause5m),  _isPaused ? "+5 minutes"  : "5 minutes");
+            NativeMethods.AppendMenu(hPauseMenu, NativeMethods.MF_STRING, Cmd(TrayCmd.Pause10m), _isPaused ? "+10 minutes" : "10 minutes");
+            NativeMethods.AppendMenu(hPauseMenu, NativeMethods.MF_STRING, Cmd(TrayCmd.Pause30m), _isPaused ? "+30 minutes" : "30 minutes");
+            NativeMethods.AppendMenu(hPauseMenu, NativeMethods.MF_STRING, Cmd(TrayCmd.Pause1h),  _isPaused ? "+1 hour"     : "1 hour");
+            NativeMethods.AppendMenu(hMenu,
+                NativeMethods.MF_POPUP | (_isMonitoring ? 0u : NativeMethods.MF_GRAYED),
+                (UIntPtr)(nuint)(nint)hPauseMenu, "Pause");
+            NativeMethods.AppendMenu(hMenu,
+                NativeMethods.MF_STRING | (_isPaused ? 0u : NativeMethods.MF_GRAYED),
+                Cmd(TrayCmd.Resume), "Resume");
+
+            // ── Exit (bottom) ────────────────────────────────────────────────
+            NativeMethods.AppendMenu(hMenu, NativeMethods.MF_SEPARATOR, UIntPtr.Zero, null);
+            NativeMethods.AppendMenu(hMenu, NativeMethods.MF_STRING,    Cmd(TrayCmd.Exit), "Exit");
 
             NativeMethods.GetCursorPos(out var pt);
 
@@ -388,22 +477,57 @@ public partial class MainWindow : Window
 
             const uint TPM_RETURNCMD   = 0x0100;
             const uint TPM_RIGHTBUTTON = 0x0002;
-            var cmd = NativeMethods.TrackPopupMenuEx(
+            var selected = NativeMethods.TrackPopupMenuEx(
                 hMenu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
                 pt.x, pt.y, _hwndSource.Handle, IntPtr.Zero);
 
             // Post a benign message so the SetForegroundWindow trick works correctly.
             NativeMethods.PostMessage(_hwndSource.Handle, 0 /* WM_NULL */, IntPtr.Zero, IntPtr.Zero);
 
-            switch (cmd)
+            switch ((TrayCmd)selected)
             {
-                case 1: ToggleTrayWindowVisibility(); break;
-                case 2: ExitApplication();            break;
+                case TrayCmd.ShowHideWindow: ToggleTrayWindowVisibility(); break;
+                case TrayCmd.Exit:           ExitApplication();            break;
+
+                case TrayCmd.Load:                EnsureWindowVisible(); MenuItemLoad_Click(this, new RoutedEventArgs());                  break;
+                case TrayCmd.Save:                if (_currentFilePath == null) EnsureWindowVisible();
+                                                  MenuItemSave_Click(this, new RoutedEventArgs());                                         break;
+                case TrayCmd.SaveAs:              EnsureWindowVisible(); MenuItemSaveAs_Click(this, new RoutedEventArgs());                break;
+                case TrayCmd.ExportSelectedFormat: EnsureWindowVisible(); MenuItemExportSelectedFormat_Click(this, new RoutedEventArgs()); break;
+                case TrayCmd.Settings:            EnsureWindowVisible(); MenuItemSettings_Click(this, new RoutedEventArgs());              break;
+
+                case TrayCmd.Clear:          MenuItemClear_Click(this, new RoutedEventArgs()); break;
+                case TrayCmd.Refresh:        RefreshFormats(); CaptureStaticSnapshot();        break;
+                case TrayCmd.MonitorChanges: MenuItemMonitorChanges.IsChecked = !_isMonitoring;
+                                             MenuItemMonitorChanges_Click(this, new RoutedEventArgs()); break;
+                case TrayCmd.TrackHistory:   MenuItemTrackHistory.IsChecked = !_isTrackingHistory;
+                                             MenuItemTrackHistory_Click(this, new RoutedEventArgs());   break;
+
+                case TrayCmd.Pause1m:  ActivatePause(1);  break;
+                case TrayCmd.Pause5m:  ActivatePause(5);  break;
+                case TrayCmd.Pause10m: ActivatePause(10); break;
+                case TrayCmd.Pause30m: ActivatePause(30); break;
+                case TrayCmd.Pause1h:  ActivatePause(60); break;
+
+                case TrayCmd.Resume: CancelPause(); break;
+
+                case TrayCmd.SubmitFeedback: MenuItemSubmitFeedback_Click(this, new RoutedEventArgs()); break;
+                case TrayCmd.About:          EnsureWindowVisible(); new AboutDialog { Owner = this }.ShowDialog(); break;
             }
         }
         finally
         {
             NativeMethods.DestroyMenu(hMenu);
+        }
+    }
+
+    private void EnsureWindowVisible()
+    {
+        if (!IsVisible)
+        {
+            Show();
+            WindowState = WindowState.Normal;
+            Activate();
         }
     }
 

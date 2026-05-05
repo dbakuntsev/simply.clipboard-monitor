@@ -115,6 +115,9 @@ internal static partial class NativeMethods
     internal const uint NIIF_INFO   = 0x00000001;
 
     internal const uint MF_STRING    = 0x00000000;
+    internal const uint MF_GRAYED   = 0x00000001;
+    internal const uint MF_CHECKED  = 0x00000008;
+    internal const uint MF_POPUP    = 0x00000010;
     internal const uint MF_SEPARATOR = 0x00000800;
 
     // Fixed-buffer fields require an unsafe struct; Shell_NotifyIcon is declared

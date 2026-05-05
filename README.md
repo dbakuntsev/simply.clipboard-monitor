@@ -95,6 +95,24 @@ The menu item displays a checkmark and the status bar at the bottom shows "Monit
 
 When monitoring is turned off, a full snapshot of all current clipboard format data is taken automatically so that format previews remain functional even when the clipboard contents have since changed.
 
+### Pausing monitoring
+
+When monitoring is ON, use **Clipboard → Pause** to temporarily suspend clipboard capture for a fixed duration without fully disabling the feature:
+
+| Menu item | Duration added |
+|-----------|---------------|
+| Pause → 1 minute | 1 minute |
+| Pause → 5 minutes | 5 minutes |
+| Pause → 10 minutes | 10 minutes |
+| Pause → 30 minutes | 30 minutes |
+| Pause → 1 hour | 60 minutes |
+
+Selecting a duration while a pause is already active extends the remaining pause by that amount (the submenu items are prefixed with **+** in that case).
+
+Use **Clipboard → Resume** to cancel the pause early and resume monitoring immediately.
+
+The status bar shows "Paused until HH:MM..." while a pause is active. Turning monitoring OFF also cancels any active pause.
+
 ### Persisted preference
 
 The monitoring state is saved automatically when changed and restored on the next launch. The preference is stored in `%LOCALAPPDATA%\Simply.ClipboardMonitor\preferences.json`.
@@ -214,8 +232,13 @@ Open **File → Settings** and check **Minimize to System Tray**. When the setti
 - The system tray icon is visible at all times while the application is running.
 - Closing the main window hides it rather than exiting. The first time the window is hidden this way, a balloon notification appears to confirm the application is still running.
 - Left-clicking the tray icon toggles the window between visible and hidden.
-- Right-clicking the tray icon opens a context menu with two entries:
+- Right-clicking the tray icon opens a context menu that mirrors the main menu bar:
   - **Show/Hide Window** — toggles window visibility.
+  - **File** submenu — Load, Save, Save As, Export Selected Format, Settings. Items that open a dialog bring the main window to the foreground first.
+  - **Clipboard** submenu — Clear, Refresh, Monitor Changes (checkable), Track History (checkable).
+  - **Help** submenu — Submit Feedback, About.
+  - **Pause** submenu — suspend monitoring for 1 minute, 5 minutes, 10 minutes, 30 minutes, or 1 hour. While a pause is active the current expiry time is shown as a disabled label at the top of the tray menu, and duration items are prefixed with **+** to extend the pause.
+  - **Resume** — available only while a pause is active; cancels the pause immediately.
   - **Exit** — closes the application immediately without hiding to the tray.
 - **File → Exit** always exits the application, regardless of the setting.
 
@@ -254,6 +277,15 @@ When **Start minimized** is ON, the application window does not appear on screen
 ### Persisted preference
 
 The **Minimize to System Tray** setting is saved in `%LOCALAPPDATA%\Simply.ClipboardMonitor\preferences.json` along with a flag that tracks whether the first-minimize balloon notification has been shown (so it appears only once ever). **Start at login** state is read directly from the registry on each launch so the UI always reflects the actual system state.
+
+## Single Instance
+
+Only one instance of the application can run per Windows login session. If a second instance is launched while the application is already running:
+
+- The second instance signals the first instance to show and activate its main window.
+- The second instance exits immediately.
+
+The enforcement is session-scoped (using a named mutex without the `Global\` prefix), so separate interactive logon sessions on the same machine each get their own independent instance.
 
 ## Clipboard Owner
 

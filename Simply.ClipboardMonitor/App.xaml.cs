@@ -4,6 +4,7 @@ using Simply.ClipboardMonitor.Services;
 using Simply.ClipboardMonitor.Services.Impl;
 using Simply.ClipboardMonitor.Services.Impl.Strategies;
 using Simply.ClipboardMonitor.Views.Previews;
+using System.Threading;
 using System.Windows;
 using System.Windows.Threading;
 
@@ -15,10 +16,24 @@ namespace Simply.ClipboardMonitor;
 /// </summary>
 public partial class App : Application
 {
+    // Named objects are session-scoped by default on Windows (no "Global\" prefix),
+    // so each interactive logon session gets its own independent instance limit.
+    private const string MutexName = "Simply.ClipboardMonitor.SingleInstance";
+    private const string EventName = "Simply.ClipboardMonitor.Activate";
+
+    private Mutex?           _singleInstanceMutex;
+    private EventWaitHandle? _activationEvent;
     private ServiceProvider? _serviceProvider;
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        if (!TryAcquireSingleInstanceMutex())
+        {
+            SignalExistingInstance();
+            Current.Shutdown();
+            return;
+        }
+
         base.OnStartup(e);
 
         DispatcherUnhandledException              += OnDispatcherUnhandledException;
@@ -29,14 +44,80 @@ public partial class App : Application
         RegisterServices(services);
         _serviceProvider = services.BuildServiceProvider();
 
+        StartActivationListener();
+
         var mainWindow = _serviceProvider.GetRequiredService<MainWindow>();
         mainWindow.Show();
     }
 
     protected override void OnExit(ExitEventArgs e)
     {
+        _activationEvent?.Dispose();
+        _singleInstanceMutex?.ReleaseMutex();
+        _singleInstanceMutex?.Dispose();
         _serviceProvider?.Dispose();
         base.OnExit(e);
+    }
+
+    // ── Single-instance helpers ──────────────────────────────────────────────
+
+    private bool TryAcquireSingleInstanceMutex()
+    {
+        bool createdNew;
+        try
+        {
+            _singleInstanceMutex = new Mutex(true, MutexName, out createdNew);
+            if (!createdNew)
+            {
+                _singleInstanceMutex.Dispose();
+                _singleInstanceMutex = null;
+            }
+        }
+        catch (AbandonedMutexException ex)
+        {
+            // Previous instance crashed while holding the mutex; we now own it.
+            _singleInstanceMutex = ex.Mutex;
+            createdNew = true;
+        }
+        return createdNew;
+    }
+
+    private static void SignalExistingInstance()
+    {
+        try
+        {
+            using var evt = EventWaitHandle.OpenExisting(EventName);
+            evt.Set();
+        }
+        catch (WaitHandleCannotBeOpenedException)
+        {
+            // First instance hasn't finished initialising yet; ignore.
+        }
+    }
+
+    private void StartActivationListener()
+    {
+        _activationEvent = new EventWaitHandle(false, EventResetMode.AutoReset, EventName);
+
+        new Thread(() =>
+        {
+            while (true)
+            {
+                try { _activationEvent.WaitOne(); }
+                catch { return; }
+
+                Dispatcher.Invoke(static () =>
+                {
+                    if (Current.MainWindow is { } w)
+                    {
+                        if (!w.IsVisible) w.Show();
+                        w.WindowState = WindowState.Normal;
+                        w.Activate();
+                    }
+                });
+            }
+        })
+        { IsBackground = true, Name = "SingleInstance.ActivationListener" }.Start();
     }
 
     // ── Unhandled exception handlers ─────────────────────────────────────────

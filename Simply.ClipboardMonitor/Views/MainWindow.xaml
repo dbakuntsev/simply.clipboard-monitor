@@ -31,6 +31,14 @@
                           Header="Track _History"
                           IsCheckable="True"
                           Click="MenuItemTrackHistory_Click" />
+                <MenuItem x:Name="MenuItemPause" Header="_Pause" SubmenuOpened="PauseMenu_SubmenuOpened">
+                    <MenuItem x:Name="MenuItemPause1m"  Header="1 minute"   Tag="1"  Click="MenuItemPause_Click" />
+                    <MenuItem x:Name="MenuItemPause5m"  Header="5 minutes"  Tag="5"  Click="MenuItemPause_Click" />
+                    <MenuItem x:Name="MenuItemPause10m" Header="10 minutes" Tag="10" Click="MenuItemPause_Click" />
+                    <MenuItem x:Name="MenuItemPause30m" Header="30 minutes" Tag="30" Click="MenuItemPause_Click" />
+                    <MenuItem x:Name="MenuItemPause1h"  Header="1 hour"     Tag="60" Click="MenuItemPause_Click" />
+                </MenuItem>
+                <MenuItem x:Name="MenuItemResume" Header="R_esume" Click="MenuItemResume_Click" />
             </MenuItem>
             <MenuItem Header="_Help">
                 <MenuItem Header="Submit _Feedback" Click="MenuItemSubmitFeedback_Click" />

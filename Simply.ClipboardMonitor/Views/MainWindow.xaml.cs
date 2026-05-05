@@ -85,6 +85,12 @@ public partial class MainWindow : Window
     private ListSortDirection _currentSortDirection = ListSortDirection.Ascending;
     private List<FormatColumnPreference> _storedColumnPreferences = [];
     private bool _isMonitoring;
+
+    // Monitoring pause state
+    private bool             _isPaused;
+    private DateTime         _pauseUntil;
+    private DispatcherTimer? _pauseTimer;
+
     // Tracks the path of the most recently loaded or saved .clipdb file.
     private string? _currentFilePath;
 
@@ -537,7 +543,7 @@ public partial class MainWindow : Window
     {
         if (msg == WM_CLIPBOARDUPDATE)
         {
-            if (_isMonitoring)
+            if (_isMonitoring && !_isPaused)
             {
                 // Read the sequence number before RefreshFormats() so that any
                 // GetClipboardData call (including delayed-rendering triggers) that
@@ -718,7 +724,22 @@ public partial class MainWindow : Window
 
     private void UpdateStatusBar()
     {
-        if (_isMonitoring && _isTrackingHistory)
+        if (_isMonitoring && _isPaused)
+        {
+            var pausedUntil = _pauseUntil.Date == DateTime.Today
+                ? _pauseUntil.ToString("t")
+                : _pauseUntil.ToString("g");
+            if (_isTrackingHistory)
+            {
+                var size = _historyMaintenance.GetDatabaseFileSize();
+                StatusText.Text = $"Paused until {pausedUntil}... · Tracking history ({DisplayHelper.FormatFileSize(size)} storage size)...";
+            }
+            else
+            {
+                StatusText.Text = $"Paused until {pausedUntil}...";
+            }
+        }
+        else if (_isMonitoring && _isTrackingHistory)
         {
             var size = _historyMaintenance.GetDatabaseFileSize();
             StatusText.Text = $"Monitoring... · Tracking history ({DisplayHelper.FormatFileSize(size)} storage size)...";
@@ -819,6 +840,8 @@ public partial class MainWindow : Window
     {
         MenuItemClear.IsEnabled        = NativeMethods.CountClipboardFormats() > 0;
         MenuItemTrackHistory.IsEnabled = _isMonitoring;
+        MenuItemPause.IsEnabled        = _isMonitoring;
+        MenuItemResume.IsEnabled       = _isPaused;
     }
 
     private void MenuItemClear_Click(object sender, RoutedEventArgs e)
@@ -834,6 +857,8 @@ public partial class MainWindow : Window
     private void MenuItemMonitorChanges_Click(object sender, RoutedEventArgs e)
     {
         _isMonitoring = MenuItemMonitorChanges.IsChecked;
+        if (!_isMonitoring && _isPaused)
+            CancelPause();
         UpdateStatusBar();
 
         // History tracking requires monitoring — stop it if monitoring is turned off.
@@ -857,6 +882,60 @@ public partial class MainWindow : Window
         {
             CaptureStaticSnapshot();
         }
+    }
+
+    // ── Clipboard pause ──────────────────────────────────────────────────────
+
+    private void PauseMenu_SubmenuOpened(object sender, RoutedEventArgs e)
+    {
+        MenuItemPause1m.Header  = _isPaused ? "+1 minute"   : "1 minute";
+        MenuItemPause5m.Header  = _isPaused ? "+5 minutes"  : "5 minutes";
+        MenuItemPause10m.Header = _isPaused ? "+10 minutes" : "10 minutes";
+        MenuItemPause30m.Header = _isPaused ? "+30 minutes" : "30 minutes";
+        MenuItemPause1h.Header  = _isPaused ? "+1 hour"     : "1 hour";
+    }
+
+    private void MenuItemPause_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is MenuItem item && item.Tag is string tagStr && int.TryParse(tagStr, out var minutes))
+            ActivatePause(minutes);
+    }
+
+    private void MenuItemResume_Click(object sender, RoutedEventArgs e)
+    {
+        CancelPause();
+    }
+
+    private void ActivatePause(int minutes)
+    {
+        if (_isPaused)
+            _pauseUntil = _pauseUntil.AddMinutes(minutes);
+        else
+        {
+            _isPaused   = true;
+            _pauseUntil = DateTime.Now.AddMinutes(minutes);
+        }
+
+        _pauseTimer?.Stop();
+        var remaining = _pauseUntil - DateTime.Now;
+        if (remaining <= TimeSpan.Zero)
+        {
+            CancelPause();
+            return;
+        }
+        _pauseTimer       = new DispatcherTimer { Interval = remaining };
+        _pauseTimer.Tick += (_, _) => CancelPause();
+        _pauseTimer.Start();
+
+        UpdateStatusBar();
+    }
+
+    private void CancelPause()
+    {
+        _isPaused = false;
+        _pauseTimer?.Stop();
+        _pauseTimer = null;
+        UpdateStatusBar();
     }
 
     private void MenuItemSubmitFeedback_Click(object sender, RoutedEventArgs e)

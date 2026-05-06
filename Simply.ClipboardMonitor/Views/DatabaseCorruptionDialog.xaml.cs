@@ -7,7 +7,7 @@ using System.Windows.Media.Imaging;
 namespace Simply.ClipboardMonitor;
 
 /// <summary>The choice the user made in <see cref="DatabaseCorruptionDialog"/>.</summary>
-internal enum CorruptionDialogResult { Recover, DeleteAndReset, Disable }
+public enum CorruptionDialogResult { Recover, DeleteAndReset, Disable }
 
 /// <summary>
 /// Modal dialog shown when <c>history.db</c> fails an integrity check.

@@ -203,6 +203,8 @@ public partial class App : Application
         services.AddSingleton<IHistoryRepository>(sp  => sp.GetRequiredService<HistoryRepository>());
         services.AddSingleton<IHistoryMaintenance>(sp => sp.GetRequiredService<HistoryRepository>());
 
+        services.AddSingleton<IDialogService, DialogService>();
+
         // Main window — singleton because only one instance is ever shown.
         services.AddSingleton<MainWindow>();
     }

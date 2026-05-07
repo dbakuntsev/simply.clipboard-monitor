@@ -1,26 +1,22 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.Win32;
-using System.Threading.Channels;
 using Simply.ClipboardMonitor.Common;
 using static Simply.ClipboardMonitor.Common.ClipboardFormatConstants;
 using Simply.ClipboardMonitor.Models;
 using Simply.ClipboardMonitor.Services;
+using Simply.ClipboardMonitor.ViewModels;
 using Simply.ClipboardMonitor.Views.Previews;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
-using System.Globalization;
 using System.IO;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Controls.Primitives;
 using System.Windows.Data;
-using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
-using System.Runtime.InteropServices;
 using System.Windows.Threading;
 
 namespace Simply.ClipboardMonitor;
@@ -75,21 +71,19 @@ public partial class MainWindow : Window
     private readonly IHistoryRepository       _history;
     private readonly IHistoryMaintenance      _historyMaintenance;
     private readonly IClipboardFileRepository _clipboardFiles;
+    private readonly IDialogService           _dialogService;
     private readonly IReadOnlyList<IFormatExporter> _formatExporters;
     private readonly IReadOnlyList<IPreviewTab>     _previewTabs;
     private readonly IClipboardOwnerService         _clipboardOwner;
+
+    // ── ViewModel ─────────────────────────────────────────────────────────
+    private readonly MainWindowViewModel _vm;
 
     private readonly ObservableCollection<ClipboardFormatItem> _formats = [];
     private HwndSource? _hwndSource;
     private string _currentSortProperty = DefaultSortProperty;
     private ListSortDirection _currentSortDirection = ListSortDirection.Ascending;
     private List<FormatColumnPreference> _storedColumnPreferences = [];
-    private bool _isMonitoring;
-
-    // Monitoring pause state
-    private bool             _isPaused;
-    private DateTime         _pauseUntil;
-    private DispatcherTimer? _pauseTimer;
 
     // Tracks the path of the most recently loaded or saved .clipdb file.
     private string? _currentFilePath;
@@ -111,22 +105,12 @@ public partial class MainWindow : Window
     // Selected format state — raw bytes and identity of the currently selected format
     private FormatSelectionState _formatState = new() { FormatName = string.Empty };
 
-    // History filtering state
-    private string                    _historyFilter = string.Empty;
-    private CancellationTokenSource?  _filterCts;
+    // History filter debounce state
+    private CancellationTokenSource? _filterCts;
 
     // Drag-from-history state
     private System.Windows.Point? _historyDragStartPoint;
 
-    // History limits (kept in sync with UserPreferences)
-    private const int DefaultHistoryMaxEntries = 100;
-    private const int DefaultHistoryMaxSizeMb  = 100;
-    private int _historyMaxEntries = DefaultHistoryMaxEntries;
-    private int _historyMaxSizeMb  = DefaultHistoryMaxSizeMb;
-
-    // History state
-    private bool _isTrackingHistory;
-    private readonly ObservableCollection<HistoryItem> _historyItems = [];
     // Non-null when showing a history session (maps format name → snapshot).
     // Null means the live clipboard or the static snapshot is used instead.
     private IReadOnlyDictionary<string, FormatSnapshot>? _historySnapshots;
@@ -134,29 +118,6 @@ public partial class MainWindow : Window
     // taken at the moment monitoring was disabled (or on a manual refresh).
     // Used instead of the live clipboard so format previews still work.
     private Dictionary<string, FormatSnapshot>? _staticSnapshot;
-    // Channel that serialises all DB operations through one background consumer.
-    // Each item is an Action so both session writes and limit-enforcement can share the queue.
-    private readonly Channel<Action> _historyChannel =
-        Channel.CreateUnbounded<Action>();
-
-    // Set to true once CheckIntegrity + MigrateSchema have succeeded for the current
-    // database file.  Prevents redundant integrity checks on subsequent enable/disable cycles.
-    private bool _historyDatabaseReady;
-
-    private sealed class HistoryItem
-    {
-        public required long     SessionId   { get; init; }
-        public required DateTime Timestamp   { get; init; }
-        public required string   FormatsText { get; init; }
-        public required long     TotalSize   { get; init; }
-        public required IReadOnlyList<(uint FormatId, string FormatName)> Formats { get; init; }
-
-        public IReadOnlyList<FormatPill> Pills         { get; init; } = [];
-        public string                    FormatsTooltip { get; init; } = string.Empty;
-
-        public string DateText => Timestamp.ToString("yyyy-MM-dd HH:mm:ss");
-        public string SizeText => DisplayHelper.FormatFileSize(TotalSize);
-    }
 
     public MainWindow(
         IClipboardReader         clipboardReader,
@@ -168,6 +129,7 @@ public partial class MainWindow : Window
         IHistoryMaintenance      historyMaintenance,
         IClipboardFileRepository clipboardFiles,
         IClipboardOwnerService   clipboardOwner,
+        IDialogService           dialogService,
         IEnumerable<IFormatExporter> formatExporters,
         IEnumerable<IPreviewTab>     previewTabs)
     {
@@ -180,6 +142,7 @@ public partial class MainWindow : Window
         _historyMaintenance = historyMaintenance;
         _clipboardFiles     = clipboardFiles;
         _clipboardOwner     = clipboardOwner;
+        _dialogService      = dialogService;
         _formatExporters    = formatExporters.ToList().AsReadOnly();
         _previewTabs        = previewTabs.ToList().AsReadOnly();
 
@@ -189,6 +152,20 @@ public partial class MainWindow : Window
 
         InitializeComponent();
 
+        // ── Create ViewModel (after InitializeComponent so XAML elements exist for callbacks) ──
+        _vm = new MainWindowViewModel(
+            history, historyMaintenance, formatClassifier, textDecoding, dialogService, Dispatcher,
+            setHistoryPanelVisible:          show => { if (show) ShowHistoryPanel(); else HideHistoryPanel(); },
+            setHistoryLoadingOverlayVisible: show => { if (show) ShowHistoryLoadingOverlay(); else HideHistoryLoadingOverlay(); },
+            clearFormatPanelToEmpty:         () =>  { _historySnapshots = null; InitializePreviewState(); _formats.Clear(); },
+            clearSnapshotsAndRefreshToLive:  () =>  { if (_historySnapshots != null) { _historySnapshots = null; RefreshFormats(); } },
+            setSelectedHistoryItem:          item => { HistoryListView.SelectedItem = item; if (item != null) HistoryListView.ScrollIntoView(item); },
+            setMainWindowEnabled:            enabled => IsEnabled = enabled,
+            showWarning:                     (msg, title) => MessageBox.Show(this, msg, title, MessageBoxButton.OK, MessageBoxImage.Warning),
+            savePreferences:                 SavePreferences);
+
+        DataContext = _vm;
+
         // Register each preview tab's TabItem with the tab control.
         foreach (var tab in _previewTabs)
             ContentTabControl.Items.Add(tab.TabItem);
@@ -197,14 +174,12 @@ public partial class MainWindow : Window
         CommandBindings.Add(new CommandBinding(LoadCommand, LoadCommand_Executed));
         CommandBindings.Add(new CommandBinding(SaveCommand, SaveCommand_Executed));
         CommandBindings.Add(new CommandBinding(ExportCommand, ExportCommand_Executed, ExportCommand_CanExecute));
-        _ = Task.Run(ProcessHistoryChannelAsync);
-        FormatListBox.ItemsSource   = _formats;
-        HistoryListView.ItemsSource = _historyItems;
+        _ = Task.Run(_vm.ProcessHistoryChannelAsync);
+        FormatListBox.ItemsSource = _formats;
         LoadPreferences();
-        MenuItemMonitorChanges.IsChecked = _isMonitoring;
-        MenuItemTrackHistory.IsChecked   = _isTrackingHistory;
-        if (_isTrackingHistory)
+        if (_vm.IsTrackingHistory)
             ShowHistoryPanel();
+        _vm.UpdateStatusBarText();
         UpdateStatusBar();
         ApplyFormatColumnPreferences();
         FormatListBox.AddHandler(GridViewColumnHeader.ClickEvent, new RoutedEventHandler(FormatListBox_OnColumnHeaderClick));
@@ -245,14 +220,14 @@ public partial class MainWindow : Window
 
         RefreshFormats();
 
-        if (!_isMonitoring)
+        if (!_vm.IsMonitoring)
             CaptureStaticSnapshot();
 
         // Run integrity check and schema migration on the history channel so they are
         // serialised with all subsequent DB writes.  LoadHistoryFromDatabase and
         // CaptureStartupSession are deferred until after migration completes — they run
         // as the onReady callback so they never race against an incompatible schema.
-        var isTracking = _isTrackingHistory;
+        var isTracking = _vm.IsTrackingHistory;
         if (isTracking)
             ShowHistoryLoadingOverlay();
         Action? onReady = isTracking
@@ -260,10 +235,10 @@ public partial class MainWindow : Window
               {
                   HideHistoryLoadingOverlay();
                   CaptureStartupSession();
-                  LoadHistoryFromDatabase(selectFirst: true);
+                  _vm.LoadHistoryFromDatabase(selectFirst: true);
               })
             : null;
-        _historyChannel.Writer.TryWrite(() => InitializeDatabaseOnChannel(isTracking, onReady));
+        _vm.EnqueueDatabaseInitialization(isTracking, onReady);
     }
 
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
@@ -291,7 +266,7 @@ public partial class MainWindow : Window
             _hwndSource = null;
         }
 
-        _historyChannel.Writer.TryComplete();
+        _vm.HistoryChannel.Writer.TryComplete();
         SavePreferences();
         base.OnClosed(e);
     }
@@ -426,14 +401,14 @@ public partial class MainWindow : Window
                 NativeMethods.MF_STRING | (NativeMethods.CountClipboardFormats() > 0 ? 0u : NativeMethods.MF_GRAYED),
                 Cmd(TrayCmd.Clear), "Clear");
             NativeMethods.AppendMenu(hClipboardMenu,
-                NativeMethods.MF_STRING | (_isMonitoring ? NativeMethods.MF_GRAYED : 0u),
+                NativeMethods.MF_STRING | (_vm.IsMonitoring ? NativeMethods.MF_GRAYED : 0u),
                 Cmd(TrayCmd.Refresh), "Refresh");
             NativeMethods.AppendMenu(hClipboardMenu,
-                NativeMethods.MF_STRING | (_isMonitoring ? NativeMethods.MF_CHECKED : 0u),
+                NativeMethods.MF_STRING | (_vm.IsMonitoring ? NativeMethods.MF_CHECKED : 0u),
                 Cmd(TrayCmd.MonitorChanges), "Monitor Changes");
             NativeMethods.AppendMenu(hClipboardMenu,
-                NativeMethods.MF_STRING | (_isTrackingHistory ? NativeMethods.MF_CHECKED : 0u)
-                                        | (_isMonitoring ? 0u : NativeMethods.MF_GRAYED),
+                NativeMethods.MF_STRING | (_vm.IsTrackingHistory ? NativeMethods.MF_CHECKED : 0u)
+                                        | (_vm.IsMonitoring ? 0u : NativeMethods.MF_GRAYED),
                 Cmd(TrayCmd.TrackHistory), "Track History");
             NativeMethods.AppendMenu(hMenu, NativeMethods.MF_POPUP, (UIntPtr)(nuint)(nint)hClipboardMenu, "Clipboard");
 
@@ -445,25 +420,22 @@ public partial class MainWindow : Window
 
             // ── Pause / Resume (top-level) ───────────────────────────────────
             NativeMethods.AppendMenu(hMenu, NativeMethods.MF_SEPARATOR, UIntPtr.Zero, null);
-            if (_isPaused)
+            if (_vm.IsPaused)
             {
-                var pausedUntil = _pauseUntil.Date == DateTime.Today
-                    ? _pauseUntil.ToString("t")
-                    : _pauseUntil.ToString("g");
                 NativeMethods.AppendMenu(hMenu, NativeMethods.MF_STRING | NativeMethods.MF_GRAYED,
-                    Cmd(TrayCmd.PausedUntilLabel), $"Paused until {pausedUntil}");
+                    Cmd(TrayCmd.PausedUntilLabel), $"Paused until {_vm.PauseUntilLabel}");
             }
             var hPauseMenu = NativeMethods.CreatePopupMenu();
-            NativeMethods.AppendMenu(hPauseMenu, NativeMethods.MF_STRING, Cmd(TrayCmd.Pause1m),  _isPaused ? "+1 minute"   : "1 minute");
-            NativeMethods.AppendMenu(hPauseMenu, NativeMethods.MF_STRING, Cmd(TrayCmd.Pause5m),  _isPaused ? "+5 minutes"  : "5 minutes");
-            NativeMethods.AppendMenu(hPauseMenu, NativeMethods.MF_STRING, Cmd(TrayCmd.Pause10m), _isPaused ? "+10 minutes" : "10 minutes");
-            NativeMethods.AppendMenu(hPauseMenu, NativeMethods.MF_STRING, Cmd(TrayCmd.Pause30m), _isPaused ? "+30 minutes" : "30 minutes");
-            NativeMethods.AppendMenu(hPauseMenu, NativeMethods.MF_STRING, Cmd(TrayCmd.Pause1h),  _isPaused ? "+1 hour"     : "1 hour");
+            NativeMethods.AppendMenu(hPauseMenu, NativeMethods.MF_STRING, Cmd(TrayCmd.Pause1m),  _vm.IsPaused ? "+1 minute"   : "1 minute");
+            NativeMethods.AppendMenu(hPauseMenu, NativeMethods.MF_STRING, Cmd(TrayCmd.Pause5m),  _vm.IsPaused ? "+5 minutes"  : "5 minutes");
+            NativeMethods.AppendMenu(hPauseMenu, NativeMethods.MF_STRING, Cmd(TrayCmd.Pause10m), _vm.IsPaused ? "+10 minutes" : "10 minutes");
+            NativeMethods.AppendMenu(hPauseMenu, NativeMethods.MF_STRING, Cmd(TrayCmd.Pause30m), _vm.IsPaused ? "+30 minutes" : "30 minutes");
+            NativeMethods.AppendMenu(hPauseMenu, NativeMethods.MF_STRING, Cmd(TrayCmd.Pause1h),  _vm.IsPaused ? "+1 hour"     : "1 hour");
             NativeMethods.AppendMenu(hMenu,
-                NativeMethods.MF_POPUP | (_isMonitoring ? 0u : NativeMethods.MF_GRAYED),
+                NativeMethods.MF_POPUP | (_vm.IsMonitoring ? 0u : NativeMethods.MF_GRAYED),
                 (UIntPtr)(nuint)(nint)hPauseMenu, "Pause");
             NativeMethods.AppendMenu(hMenu,
-                NativeMethods.MF_STRING | (_isPaused ? 0u : NativeMethods.MF_GRAYED),
+                NativeMethods.MF_STRING | (_vm.IsPaused ? 0u : NativeMethods.MF_GRAYED),
                 Cmd(TrayCmd.Resume), "Resume");
 
             // ── Exit (bottom) ────────────────────────────────────────────────
@@ -498,21 +470,21 @@ public partial class MainWindow : Window
 
                 case TrayCmd.Clear:          MenuItemClear_Click(this, new RoutedEventArgs()); break;
                 case TrayCmd.Refresh:        RefreshFormats(); CaptureStaticSnapshot();        break;
-                case TrayCmd.MonitorChanges: MenuItemMonitorChanges.IsChecked = !_isMonitoring;
+                case TrayCmd.MonitorChanges: MenuItemMonitorChanges.IsChecked = !_vm.IsMonitoring;
                                              MenuItemMonitorChanges_Click(this, new RoutedEventArgs()); break;
-                case TrayCmd.TrackHistory:   MenuItemTrackHistory.IsChecked = !_isTrackingHistory;
+                case TrayCmd.TrackHistory:   MenuItemTrackHistory.IsChecked = !_vm.IsTrackingHistory;
                                              MenuItemTrackHistory_Click(this, new RoutedEventArgs());   break;
 
-                case TrayCmd.Pause1m:  ActivatePause(1);  break;
-                case TrayCmd.Pause5m:  ActivatePause(5);  break;
-                case TrayCmd.Pause10m: ActivatePause(10); break;
-                case TrayCmd.Pause30m: ActivatePause(30); break;
-                case TrayCmd.Pause1h:  ActivatePause(60); break;
+                case TrayCmd.Pause1m:  _vm.ActivatePause(1);  break;
+                case TrayCmd.Pause5m:  _vm.ActivatePause(5);  break;
+                case TrayCmd.Pause10m: _vm.ActivatePause(10); break;
+                case TrayCmd.Pause30m: _vm.ActivatePause(30); break;
+                case TrayCmd.Pause1h:  _vm.ActivatePause(60); break;
 
-                case TrayCmd.Resume: CancelPause(); break;
+                case TrayCmd.Resume: _vm.CancelPause(); break;
 
                 case TrayCmd.SubmitFeedback: MenuItemSubmitFeedback_Click(this, new RoutedEventArgs()); break;
-                case TrayCmd.About:          EnsureWindowVisible(); new AboutDialog { Owner = this }.ShowDialog(); break;
+                case TrayCmd.About:          EnsureWindowVisible(); _dialogService.ShowAbout(); break;
             }
         }
         finally
@@ -667,14 +639,14 @@ public partial class MainWindow : Window
     {
         if (msg == WM_CLIPBOARDUPDATE)
         {
-            if (_isMonitoring && !_isPaused)
+            if (_vm.IsMonitoring && !_vm.IsPaused)
             {
                 // Read the sequence number before RefreshFormats() so that any
                 // GetClipboardData call (including delayed-rendering triggers) that
                 // increments it during the refresh is detectable afterwards.
                 var seqAtArrival = _clipboardReader.GetSequenceNumber();
                 RefreshFormats();
-                if (_isTrackingHistory)
+                if (_vm.IsTrackingHistory)
                     CaptureHistorySession(seqAtArrival);
             }
             handled = true;
@@ -848,31 +820,7 @@ public partial class MainWindow : Window
 
     private void UpdateStatusBar()
     {
-        if (_isMonitoring && _isPaused)
-        {
-            var pausedUntil = _pauseUntil.Date == DateTime.Today
-                ? _pauseUntil.ToString("t")
-                : _pauseUntil.ToString("g");
-            if (_isTrackingHistory)
-            {
-                var size = _historyMaintenance.GetDatabaseFileSize();
-                StatusText.Text = $"Paused until {pausedUntil}... · Tracking history ({DisplayHelper.FormatFileSize(size)} storage size)...";
-            }
-            else
-            {
-                StatusText.Text = $"Paused until {pausedUntil}...";
-            }
-        }
-        else if (_isMonitoring && _isTrackingHistory)
-        {
-            var size = _historyMaintenance.GetDatabaseFileSize();
-            StatusText.Text = $"Monitoring... · Tracking history ({DisplayHelper.FormatFileSize(size)} storage size)...";
-        }
-        else
-        {
-            StatusText.Text = _isMonitoring ? "Monitoring..." : "Press F5 to refresh";
-        }
-
+        _vm.UpdateStatusBarText();  // computes StatusBarText → PropertyChanged → StatusText.Text
         AutoStartPill.Visibility = _startAtLogin ? Visibility.Visible : Visibility.Collapsed;
         UpdateOwnerPillSeparator();
         UpdateHotkeyStatusBar();
@@ -932,7 +880,7 @@ public partial class MainWindow : Window
 
     private void RefreshClipboardCommand_CanExecute(object sender, CanExecuteRoutedEventArgs e)
     {
-        e.CanExecute = !_isMonitoring;
+        e.CanExecute = !_vm.IsMonitoring;
     }
 
     private void LoadCommand_Executed(object sender, ExecutedRoutedEventArgs e)
@@ -963,15 +911,15 @@ public partial class MainWindow : Window
     private void ClipboardMenu_SubmenuOpened(object sender, RoutedEventArgs e)
     {
         MenuItemClear.IsEnabled        = NativeMethods.CountClipboardFormats() > 0;
-        MenuItemTrackHistory.IsEnabled = _isMonitoring;
-        MenuItemPause.IsEnabled        = _isMonitoring;
-        MenuItemResume.IsEnabled       = _isPaused;
+        MenuItemTrackHistory.IsEnabled = _vm.IsMonitoring;
+        MenuItemPause.IsEnabled        = _vm.IsMonitoring;
+        MenuItemResume.IsEnabled       = _vm.IsPaused;
     }
 
     private void MenuItemClear_Click(object sender, RoutedEventArgs e)
     {
         Clipboard.Clear();
-        if (!_isMonitoring)
+        if (!_vm.IsMonitoring)
         {
             RefreshFormats();
             CaptureStaticSnapshot();
@@ -980,24 +928,14 @@ public partial class MainWindow : Window
 
     private void MenuItemMonitorChanges_Click(object sender, RoutedEventArgs e)
     {
-        _isMonitoring = MenuItemMonitorChanges.IsChecked;
-        if (!_isMonitoring && _isPaused)
-            CancelPause();
+        // IsMonitoring already updated by the TwoWay binding before this handler fires.
+        if (!_vm.IsMonitoring)
+            _vm.OnMonitoringDisabled();
+
         UpdateStatusBar();
-
-        // History tracking requires monitoring — stop it if monitoring is turned off.
-        if (!_isMonitoring && _isTrackingHistory)
-        {
-            _isTrackingHistory             = false;
-            MenuItemTrackHistory.IsChecked = false;
-            HideHistoryPanel();
-            _historyItems.Clear();
-            _historySnapshots = null;
-        }
-
         SavePreferences();
 
-        if (_isMonitoring)
+        if (_vm.IsMonitoring)
         {
             _staticSnapshot = null;
             RefreshFormats();
@@ -1012,54 +950,22 @@ public partial class MainWindow : Window
 
     private void PauseMenu_SubmenuOpened(object sender, RoutedEventArgs e)
     {
-        MenuItemPause1m.Header  = _isPaused ? "+1 minute"   : "1 minute";
-        MenuItemPause5m.Header  = _isPaused ? "+5 minutes"  : "5 minutes";
-        MenuItemPause10m.Header = _isPaused ? "+10 minutes" : "10 minutes";
-        MenuItemPause30m.Header = _isPaused ? "+30 minutes" : "30 minutes";
-        MenuItemPause1h.Header  = _isPaused ? "+1 hour"     : "1 hour";
+        MenuItemPause1m.Header  = _vm.IsPaused ? "+1 minute"   : "1 minute";
+        MenuItemPause5m.Header  = _vm.IsPaused ? "+5 minutes"  : "5 minutes";
+        MenuItemPause10m.Header = _vm.IsPaused ? "+10 minutes" : "10 minutes";
+        MenuItemPause30m.Header = _vm.IsPaused ? "+30 minutes" : "30 minutes";
+        MenuItemPause1h.Header  = _vm.IsPaused ? "+1 hour"     : "1 hour";
     }
 
     private void MenuItemPause_Click(object sender, RoutedEventArgs e)
     {
         if (sender is MenuItem item && item.Tag is string tagStr && int.TryParse(tagStr, out var minutes))
-            ActivatePause(minutes);
+            _vm.ActivatePause(minutes);
     }
 
     private void MenuItemResume_Click(object sender, RoutedEventArgs e)
     {
-        CancelPause();
-    }
-
-    private void ActivatePause(int minutes)
-    {
-        if (_isPaused)
-            _pauseUntil = _pauseUntil.AddMinutes(minutes);
-        else
-        {
-            _isPaused   = true;
-            _pauseUntil = DateTime.Now.AddMinutes(minutes);
-        }
-
-        _pauseTimer?.Stop();
-        var remaining = _pauseUntil - DateTime.Now;
-        if (remaining <= TimeSpan.Zero)
-        {
-            CancelPause();
-            return;
-        }
-        _pauseTimer       = new DispatcherTimer { Interval = remaining };
-        _pauseTimer.Tick += (_, _) => CancelPause();
-        _pauseTimer.Start();
-
-        UpdateStatusBar();
-    }
-
-    private void CancelPause()
-    {
-        _isPaused = false;
-        _pauseTimer?.Stop();
-        _pauseTimer = null;
-        UpdateStatusBar();
+        _vm.CancelPause();
     }
 
     private void MenuItemSubmitFeedback_Click(object sender, RoutedEventArgs e)
@@ -1069,83 +975,48 @@ public partial class MainWindow : Window
 
     private void MenuItemSettings_Click(object sender, RoutedEventArgs e)
     {
-        var dlg = new SettingsDialog(
-            _historyMaxEntries, _historyMaxSizeMb, _historyMaintenance,
+        var result = _dialogService.ShowSettings(new SettingsDialogInput(
+            _vm.MaxEntries, _vm.MaxSizeMb,
             _trayState.MinimizeToTray, _startAtLogin, _startMinimized,
-            _hotkeyEnabled, _hotkeyBinding, _hotkeyConflict) { Owner = this };
-        var result = dlg.ShowDialog();
+            _hotkeyEnabled, _hotkeyBinding, _hotkeyConflict));
 
-        if (dlg.HistoryWasCleared)
+        if (result.HistoryWasCleared)
+            _vm.OnHistoryCleared();
+
+        if (!result.Saved)
+            return;
+
+        _vm.MaxEntries = result.MaxEntries;
+        _vm.MaxSizeMb  = result.MaxSizeMb;
+
+        // Update hotkey state first so ApplyTraySettings reads the new values.
+        var hotkeySettingsChanged = result.HotkeyEnabled != _hotkeyEnabled ||
+                                    result.HotkeyBinding != _hotkeyBinding;
+        if (hotkeySettingsChanged)
         {
-            _historyItems.Clear();
-            if (_historySnapshots != null)
-            {
-                _historySnapshots = null;
-                RefreshFormats();
-            }
+            _hotkeyEnabled = result.HotkeyEnabled;
+            _hotkeyBinding = result.HotkeyBinding;
         }
 
-        if (result == true)
-        {
-            _historyMaxEntries = dlg.MaxEntries;
-            _historyMaxSizeMb  = dlg.MaxSizeMb;
+        if (result.MinimizeToSystemTray != _trayState.MinimizeToTray)
+            ApplyTraySettings(result.MinimizeToSystemTray);
+        else if (hotkeySettingsChanged)
+            RefreshHotkeyRegistration();
 
-            // Update hotkey state first so ApplyTraySettings reads the new values.
-            var hotkeySettingsChanged = dlg.HotkeyEnabled != _hotkeyEnabled ||
-                                        dlg.GlobalHotkeyBinding != _hotkeyBinding;
-            if (hotkeySettingsChanged)
-            {
-                _hotkeyEnabled = dlg.HotkeyEnabled;
-                _hotkeyBinding = dlg.GlobalHotkeyBinding;
-            }
+        if (result.StartAtLogin != _startAtLogin)
+            ApplyAutoStartPreference(result.StartAtLogin);
 
-            if (dlg.MinimizeToSystemTray != _trayState.MinimizeToTray)
-                ApplyTraySettings(dlg.MinimizeToSystemTray);
-            else if (hotkeySettingsChanged)
-                RefreshHotkeyRegistration();
+        _startMinimized = result.StartMinimized;
 
-            if (dlg.StartAtLogin != _startAtLogin)
-                ApplyAutoStartPreference(dlg.StartAtLogin);
+        SavePreferences();
 
-            _startMinimized = dlg.StartMinimized;
-
-            SavePreferences();
-
-            // Enforce new limits against any existing database, regardless of whether
-            // history tracking is currently on (old data may still need trimming).
-            if (_historyChannel.Reader.Count == 0)
-            {
-                var maxEntries      = _historyMaxEntries;
-                var maxBytes        = (long)_historyMaxSizeMb * 1024L * 1024L;
-                var trackingHistory = _isTrackingHistory;
-                _historyChannel.Writer.TryWrite(() =>
-                {
-                    var removed = _historyMaintenance.EnforceLimits(maxEntries, maxBytes);
-                    if (removed || trackingHistory)
-                    {
-                        Dispatcher.InvokeAsync(() =>
-                        {
-                            if (removed && trackingHistory)
-                            {
-                                if (_historySnapshots != null)
-                                {
-                                    _historySnapshots = null;
-                                    RefreshFormats();
-                                }
-                                LoadHistoryFromDatabase();
-                            }
-                            UpdateStatusBar();
-                        });
-                    }
-                });
-            }
-        }
+        // Enforce new limits against any existing database, regardless of whether
+        // history tracking is currently on (old data may still need trimming).
+        _vm.EnqueueEnforceLimits();
     }
 
     private void MenuItemAbout_Click(object sender, RoutedEventArgs e)
-    {
-        new AboutDialog { Owner = this }.ShowDialog();
-    }
+        => _dialogService.ShowAbout();
 
     private void MenuItemLoad_Click(object sender, RoutedEventArgs e)
     {
@@ -1353,7 +1224,7 @@ public partial class MainWindow : Window
         _currentFilePath = path;
         UpdateFileStatusBar("Loaded", path);
 
-        if (!_isMonitoring)
+        if (!_vm.IsMonitoring)
             RefreshFormats();
     }
 
@@ -1491,10 +1362,10 @@ public partial class MainWindow : Window
                 }
             }
 
-            _isMonitoring         = preferences.MonitorChanges;
-            _isTrackingHistory    = preferences.TrackHistory && _isMonitoring;
-            _historyMaxEntries    = preferences.HistoryMaxEntries > 0 ? preferences.HistoryMaxEntries : DefaultHistoryMaxEntries;
-            _historyMaxSizeMb     = preferences.HistoryMaxSizeMb  > 0 ? preferences.HistoryMaxSizeMb  : DefaultHistoryMaxSizeMb;
+            _vm.IsMonitoring      = preferences.MonitorChanges;
+            _vm.IsTrackingHistory = preferences.TrackHistory && preferences.MonitorChanges;
+            _vm.MaxEntries        = preferences.HistoryMaxEntries > 0 ? preferences.HistoryMaxEntries : _vm.MaxEntries;
+            _vm.MaxSizeMb         = preferences.HistoryMaxSizeMb  > 0 ? preferences.HistoryMaxSizeMb  : _vm.MaxSizeMb;
             _trayState.MinimizeToTray = preferences.MinimizeToSystemTray;
             _trayState.BalloonShown   = preferences.TrayBalloonShown;
             _startMinimized           = preferences.StartMinimized;
@@ -1507,10 +1378,8 @@ public partial class MainWindow : Window
             _currentSortProperty     = DefaultSortProperty;
             _currentSortDirection    = ListSortDirection.Ascending;
             _storedColumnPreferences = [];
-            _isMonitoring            = true;
-            _isTrackingHistory       = false;
-            _historyMaxEntries       = DefaultHistoryMaxEntries;
-            _historyMaxSizeMb        = DefaultHistoryMaxSizeMb;
+            _vm.IsMonitoring      = true;
+            _vm.IsTrackingHistory = false;
         }
 
         // Always read auto-start from the registry so the UI reflects the actual system state,
@@ -1533,10 +1402,10 @@ public partial class MainWindow : Window
             SortProperty         = _currentSortProperty,
             SortDirection        = _currentSortDirection.ToString(),
             FormatColumns        = CaptureFormatColumnPreferences(),
-            MonitorChanges       = _isMonitoring,
-            TrackHistory         = _isTrackingHistory,
-            HistoryMaxEntries    = _historyMaxEntries,
-            HistoryMaxSizeMb     = _historyMaxSizeMb,
+            MonitorChanges       = _vm.IsMonitoring,
+            TrackHistory         = _vm.IsTrackingHistory,
+            HistoryMaxEntries    = _vm.MaxEntries,
+            HistoryMaxSizeMb     = _vm.MaxSizeMb,
             MinimizeToSystemTray = _trayState.MinimizeToTray,
             TrayBalloonShown     = _trayState.BalloonShown,
             StartAtLogin         = _startAtLogin,
@@ -1697,32 +1566,24 @@ public partial class MainWindow : Window
 
     private void MenuItemTrackHistory_Click(object sender, RoutedEventArgs e)
     {
-        _isTrackingHistory = MenuItemTrackHistory.IsChecked;
-
-        if (_isTrackingHistory)
+        // IsTrackingHistory already updated by the TwoWay binding before this handler fires.
+        if (_vm.IsTrackingHistory)
         {
             ShowHistoryPanel();
             ShowHistoryLoadingOverlay();
             // Defer loading until integrity check and migration complete on the channel.
-            _historyChannel.Writer.TryWrite(() => InitializeDatabaseOnChannel(
+            _vm.EnqueueDatabaseInitialization(
                 isTrackingHistory: true,
                 onReady: () => Dispatcher.Invoke(() =>
                 {
                     HideHistoryLoadingOverlay();
                     CaptureStartupSession();
-                    LoadHistoryFromDatabase(selectFirst: true);
-                })));
+                    _vm.LoadHistoryFromDatabase(selectFirst: true);
+                }));
         }
         else
         {
-            HideHistoryPanel();
-            _historyItems.Clear();
-
-            if (_historySnapshots != null)
-            {
-                _historySnapshots = null;
-                RefreshFormats();
-            }
+            _vm.OnHistoryTrackingDisabled();
         }
 
         UpdateStatusBar();
@@ -1731,8 +1592,12 @@ public partial class MainWindow : Window
 
     private void HistoryListView_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (HistoryListView.SelectedItem is not HistoryItem entry)
+        if (HistoryListView.SelectedItem is not MainWindowViewModel.HistoryItem entry)
+        {
+            _vm.SelectedSession = null;
             return;
+        }
+        _vm.SelectedSession = entry;
 
         List<FormatSnapshot> snapshots;
         try
@@ -1751,7 +1616,7 @@ public partial class MainWindow : Window
         InitializePreviewState();
         _formats.Clear();
 
-        var filterTerm = string.IsNullOrWhiteSpace(_historyFilter) ? null : _historyFilter.Trim();
+        var filterTerm = string.IsNullOrWhiteSpace(_vm.SearchText) ? null : _vm.SearchText.Trim();
         foreach (var snap in snapshots)
         {
             var contentSize      = snap.OriginalSize > 0 ? snap.OriginalSize.ToString("N0") : "n/a";
@@ -1787,7 +1652,7 @@ public partial class MainWindow : Window
 
     private void HistoryFilterBox_TextChanged(object sender, TextChangedEventArgs e)
     {
-        _historyFilter = HistoryFilterBox.Text;
+        _vm.SearchText = HistoryFilterBox.Text;
 
         _filterCts?.Cancel();
         _filterCts = new CancellationTokenSource();
@@ -1802,13 +1667,13 @@ public partial class MainWindow : Window
                 {
                     if (!token.IsCancellationRequested)
                     {
-                        var filter = string.IsNullOrWhiteSpace(_historyFilter) ? null : _historyFilter;
+                        var filter = string.IsNullOrWhiteSpace(_vm.SearchText) ? null : _vm.SearchText;
                         if (filter == null)
                             // Filter removed: show all history and select the latest entry (req 5).
-                            LoadHistoryFromDatabase(null, selectFirst: true);
+                            _vm.LoadHistoryFromDatabase(null, selectFirst: true);
                         else
                             // Filter changed: keep the current selection if still visible (req 4).
-                            LoadHistoryFromDatabase(filter, (HistoryListView.SelectedItem as HistoryItem)?.SessionId);
+                            _vm.LoadHistoryFromDatabase(filter, _vm.SelectedSession?.SessionId);
                     }
                 });
             }
@@ -1837,7 +1702,7 @@ public partial class MainWindow : Window
         if (_clipboardReader.GetSequenceNumber() != seqAtArrival)
             return;
 
-        _historyChannel.Writer.TryWrite(() => WriteHistorySession(snapshots, timestamp));
+        _vm.EnqueueHistorySession(snapshots, timestamp);
     }
 
     /// <summary>
@@ -1856,36 +1721,7 @@ public partial class MainWindow : Window
         if (snapshots.Count == 0)
             return;
 
-        _historyChannel.Writer.TryWrite(() => WriteStartupSession(snapshots, timestamp));
-    }
-
-    /// <summary>
-    /// Background-thread handler for the startup clipboard snapshot.
-    /// Writes a new session only when the clipboard differs from the last history entry;
-    /// always finishes by reloading the history list on the UI thread and selecting the
-    /// newest entry (whether newly added or the pre-existing last one).
-    /// </summary>
-    private void WriteStartupSession(IReadOnlyList<FormatSnapshot> snapshots, DateTime timestamp)
-    {
-        try
-        {
-            if (!_history.IsDuplicateOfLastSession(snapshots))
-            {
-                var payload          = BuildSessionPayload(snapshots);
-                var maxDatabaseBytes = (long)_historyMaxSizeMb * 1024L * 1024L;
-                _history.AddSession(snapshots, payload.TextContents, payload.PillsText, timestamp,
-                    _historyMaxEntries, maxDatabaseBytes);
-            }
-        }
-        catch
-        {
-            // Silently ignore write failures.
-        }
-        finally
-        {
-            // Reload the list and select the newest entry (new or duplicate) in all cases.
-            Dispatcher.InvokeAsync(() => LoadHistoryFromDatabase(null, selectFirst: true));
-        }
+        _vm.EnqueueStartupSession(snapshots, timestamp);
     }
 
     /// <summary>
@@ -1908,342 +1744,11 @@ public partial class MainWindow : Window
             : snapshots.ToDictionary(s => s.FormatName, StringComparer.Ordinal);
     }
 
-    /// <summary>
-    /// Long-running background consumer: drains the history channel one action at a time,
-    /// guaranteeing all DB operations are serialised in arrival order with no contention.
-    /// </summary>
-    private async Task ProcessHistoryChannelAsync()
-    {
-        await foreach (var action in _historyChannel.Reader.ReadAllAsync())
-        {
-            action();
-        }
-    }
-
-    // ── Database initialisation orchestration ────────────────────────────────
-    // Runs on the history background channel thread (not the UI thread).
-
-    /// <summary>
-    /// Checks database integrity, migrates the schema, and invokes <paramref name="onReady"/>
-    /// once the database is ready.  Handles corruption by prompting the user via the UI thread.
-    /// Must be called as a channel action (background thread).
-    /// </summary>
-    private void InitializeDatabaseOnChannel(bool isTrackingHistory, Action? onReady)
-    {
-        // Fast path: integrity check and schema migration already completed this session.
-        if (_historyDatabaseReady)
-        {
-            onReady?.Invoke();
-            return;
-        }
-
-        var status = _historyMaintenance.CheckIntegrity();
-
-        if (status == DatabaseIntegrityStatus.Corrupted)
-            ErrorLogger.Log(new InvalidOperationException(
-                "history.db failed PRAGMA integrity_check — " +
-                (isTrackingHistory ? "prompting user for recovery action."
-                                   : "history tracking is off, skipping recovery.")));
-
-        if (status != DatabaseIntegrityStatus.Corrupted)
-        {
-            // Absent or Healthy: migrate schema and signal readiness.
-            _historyMaintenance.MigrateSchema();
-            _historyDatabaseReady = true;
-            onReady?.Invoke();
-            return;
-        }
-
-        if (!isTrackingHistory)
-            return; // Silently skip; will re-check when history tracking is enabled.
-
-        // Corrupted + history tracking is on: prompt the user.
-        HandleCorruptDatabase(onReady);
-    }
-
-    private void HandleCorruptDatabase(Action? onReady)
-    {
-        var choice = Dispatcher.Invoke(() => ShowCorruptionDialog(showRecoverOption: true));
-        ErrorLogger.LogInfo($"Corruption dialog: user chose {choice}.");
-
-        switch (choice)
-        {
-            case CorruptionDialogResult.Recover:
-                AttemptRecovery(onReady);
-                break;
-            case CorruptionDialogResult.DeleteAndReset:
-                DeleteAndReset(onReady);
-                break;
-            default: // Disable
-                Dispatcher.Invoke(DisableHistoryTracking);
-                DrainHistoryChannel();
-                break;
-        }
-    }
-
-    private void AttemptRecovery(Action? onReady)
-    {
-        // Show "Recovering…" window and block the main window from interaction.
-        DatabaseRecoveringWindow? recoveringWindow = null;
-        Dispatcher.Invoke(() =>
-        {
-            recoveringWindow = new DatabaseRecoveringWindow { Owner = this };
-            IsEnabled = false;
-            recoveringWindow.Show();
-        });
-
-        var result = _historyMaintenance.TryRecover();
-
-        Dispatcher.Invoke(() =>
-        {
-            recoveringWindow?.CloseWindow();
-            IsEnabled = true;
-        });
-
-        if (result.Success)
-        {
-            ErrorLogger.LogInfo(
-                $"Recovery succeeded using {result.Strategy}. " +
-                $"Sessions recovered: {result.SessionsRecovered}, lost: {result.SessionsLost}.");
-
-            _historyMaintenance.MigrateSchema();
-            _historyDatabaseReady = true;
-
-            if (result.HadUnreadableRows)
-            {
-                Dispatcher.Invoke(() => MessageBox.Show(
-                    this,
-                    "Recovery completed. Some history entries may be incomplete or missing " +
-                    "due to unreadable rows in the corrupted database.",
-                    "Recovery Warning",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Warning));
-            }
-
-            onReady?.Invoke();
-        }
-        else
-        {
-            ErrorLogger.LogInfo($"Recovery failed (strategy: {result.Strategy}).");
-
-            // All recovery strategies failed; offer delete or disable.
-            var choice = Dispatcher.Invoke(() => ShowCorruptionDialog(showRecoverOption: false));
-            ErrorLogger.LogInfo($"Post-recovery failure dialog: user chose {choice}.");
-            switch (choice)
-            {
-                case CorruptionDialogResult.DeleteAndReset:
-                    DeleteAndReset(onReady);
-                    break;
-                default: // Disable
-                    Dispatcher.Invoke(DisableHistoryTracking);
-                    DrainHistoryChannel();
-                    break;
-            }
-        }
-    }
-
-    private void DeleteAndReset(Action? onReady)
-    {
-        _historyMaintenance.DeleteDatabase();
-        _historyMaintenance.InitializeFreshDatabase();
-        _historyDatabaseReady = true;
-        onReady?.Invoke();
-    }
-
-    /// <summary>
-    /// Drains all pending actions from the history channel.
-    /// Called from within a channel action (the consumer is paused), so TryRead is safe.
-    /// </summary>
-    private void DrainHistoryChannel()
-    {
-        while (_historyChannel.Reader.TryRead(out _)) { }
-    }
-
-    /// <summary>Must be called on the UI thread.</summary>
-    private CorruptionDialogResult ShowCorruptionDialog(bool showRecoverOption)
-    {
-        var dialog = new DatabaseCorruptionDialog(showRecoverOption) { Owner = this };
-        dialog.ShowDialog();
-        return dialog.Result;
-    }
-
-    /// <summary>
-    /// Turns history tracking off, updates all related UI state, and saves preferences.
-    /// Must be called on the UI thread.
-    /// </summary>
-    private void DisableHistoryTracking()
-    {
-        _isTrackingHistory             = false;
-        MenuItemTrackHistory.IsChecked = false;
-        HideHistoryLoadingOverlay();
-        HideHistoryPanel();
-        _historyItems.Clear();
-
-        if (_historySnapshots != null)
-        {
-            _historySnapshots = null;
-            RefreshFormats();
-        }
-
-        UpdateStatusBar();
-        SavePreferences();
-    }
-
-    private record SessionPayload(
-        IReadOnlyList<(uint FormatId, string FormatName)> Formats,
-        IReadOnlyList<Models.FormatPill>                  Pills,
-        string                                            PillsText,
-        string                                            Tooltip,
-        IReadOnlyList<string?>                            TextContents);
-
-    private SessionPayload BuildSessionPayload(IReadOnlyList<FormatSnapshot> snapshots)
-    {
-        var formats      = snapshots.Select(s => (s.FormatId, s.FormatName)).ToList();
-        var pills        = _formatClassifier.ComputePills(formats);
-        var pillsText    = string.Join(" ", pills.Select(p => p.Label));
-        var tooltip      = _formatClassifier.ComputeTooltip(formats);
-        var textContents = snapshots
-            .Select(s =>
-            {
-                if (s.Data == null) return (string?)null;
-                var result = _textDecoding.Decode(s.FormatId, s.FormatName, s.Data);
-                return result.Success ? result.Text : null;
-            })
-            .ToList();
-        return new SessionPayload(formats, pills, pillsText, tooltip, textContents);
-    }
-
-    /// <summary>
-    /// Called by the channel consumer on a background thread.
-    /// Compresses blobs, writes to history.db, then posts the new list entry to the UI.
-    /// </summary>
-    private void WriteHistorySession(IReadOnlyList<FormatSnapshot> snapshots, DateTime timestamp)
-    {
-        try
-        {
-            var maxDatabaseBytes = (long)_historyMaxSizeMb * 1024L * 1024L;
-
-            // Build pills, tooltip, pillsText, and decoded text content on the background thread.
-            var payload = BuildSessionPayload(snapshots);
-
-            var (sessionId, trimmed) = _history.AddSession(
-                snapshots, payload.TextContents, payload.PillsText, timestamp, _historyMaxEntries, maxDatabaseBytes);
-
-            var formatsText = _history.BuildFormatsText(snapshots);
-            var totalSize   = snapshots.Sum(s => s.OriginalSize);
-
-            Dispatcher.InvokeAsync(() =>
-            {
-                var activeFilter = _historyFilter;
-                if (trimmed || !string.IsNullOrEmpty(activeFilter))
-                {
-                    if (string.IsNullOrEmpty(activeFilter))
-                    {
-                        // Trimmed with no active filter: reload and select the newest entry.
-                        LoadHistoryFromDatabase(null, selectFirst: true);
-                    }
-                    else
-                    {
-                        // Filter is active: reload the filtered list while keeping the
-                        // current selection if it still appears in the results (req 3 & 4).
-                        // If it no longer matches the filter the panel is cleared (req 2).
-                        var preserve = (HistoryListView.SelectedItem as HistoryItem)?.SessionId;
-                        LoadHistoryFromDatabase(activeFilter, preserve);
-                    }
-                }
-                else
-                {
-                    var entry = new HistoryItem
-                    {
-                        SessionId      = sessionId,
-                        Timestamp      = timestamp,
-                        FormatsText    = formatsText,
-                        TotalSize      = totalSize,
-                        Formats        = payload.Formats,
-                        Pills          = payload.Pills,
-                        FormatsTooltip = payload.Tooltip,
-                    };
-                    _historyItems.Insert(0, entry);
-                    HistoryListView.SelectedItem = entry;
-                }
-                UpdateStatusBar();
-            });
-        }
-        catch
-        {
-            // Background write failure — silently ignored.
-        }
-    }
-
-    private void LoadHistoryFromDatabase(
-        string? filter            = null,
-        long?   preserveSessionId = null,
-        bool    selectFirst       = false)
-    {
-        try
-        {
-            var sessions = _history.LoadSessions(filter);
-            _historyItems.Clear();
-            foreach (var session in sessions)
-            {
-                var pills   = _formatClassifier.ComputePills(session.Formats);
-                var tooltip = _formatClassifier.ComputeTooltip(session.Formats);
-
-                _historyItems.Add(new HistoryItem
-                {
-                    SessionId      = session.SessionId,
-                    Timestamp      = session.Timestamp,
-                    FormatsText    = session.FormatsText,
-                    TotalSize      = session.TotalSize,
-                    Formats        = session.Formats,
-                    Pills          = pills,
-                    FormatsTooltip = tooltip,
-                });
-            }
-
-            // Determine which item to (re)select after the reload.
-            HistoryItem? toSelect = null;
-            if (preserveSessionId.HasValue)
-                toSelect = _historyItems.FirstOrDefault(h => h.SessionId == preserveSessionId.Value);
-            else if (selectFirst && _historyItems.Count > 0)
-                toSelect = _historyItems[0];
-
-            // When a selection was requested but no qualifying item exists (filter
-            // removed the previously selected session, or the database is empty),
-            // explicitly clear the format panel so it does not show stale history data.
-            if (toSelect == null && (preserveSessionId.HasValue || selectFirst))
-            {
-                _historySnapshots = null;
-                InitializePreviewState();
-                _formats.Clear();
-            }
-
-            HistoryListView.SelectedItem = toSelect;
-            if (toSelect != null)
-                HistoryListView.ScrollIntoView(toSelect);
-
-            UpdateHistoryCountLabel(_historyItems.Count, filter);
-        }
-        catch
-        {
-            // Silently ignore load failures.
-        }
-    }
-
-    private void UpdateHistoryCountLabel(int filteredCount, string? filter)
-    {
-        int total = string.IsNullOrEmpty(filter) ? filteredCount : _history.GetSessionCount();
-        string n  = filteredCount == 1 ? "1 item" : $"{filteredCount} items";
-        HistoryCountTextBlock.Text = string.IsNullOrEmpty(filter) || filteredCount == total
-            ? n
-            : $"{n} ({total} total)";
-    }
-
     // ── History context menu ─────────────────────────────────────────────────
 
     private void HistoryContextMenu_Opening(object sender, ContextMenuEventArgs e)
     {
-        var hasSelection = HistoryListView.SelectedItem is HistoryItem;
+        var hasSelection = HistoryListView.SelectedItem is MainWindowViewModel.HistoryItem;
         HistoryMenuLoadIntoClipboard.IsEnabled = hasSelection
             && _historySnapshots != null
             && !IsHistorySessionCurrentClipboard(_historySnapshots);
@@ -2280,7 +1785,7 @@ public partial class MainWindow : Window
     private void HistoryListView_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         var item = FindVisualAncestor<ListViewItem>(e.OriginalSource as DependencyObject);
-        if (item?.DataContext is HistoryItem historyItem)
+        if (item?.DataContext is MainWindowViewModel.HistoryItem historyItem)
         {
             _historyDragStartPoint = e.GetPosition(HistoryListView);
             HistoryListView.SelectedItem = historyItem;
@@ -2303,7 +1808,7 @@ public partial class MainWindow : Window
 
         _historyDragStartPoint = null;
 
-        if (HistoryListView.SelectedItem is not HistoryItem entry)
+        if (HistoryListView.SelectedItem is not MainWindowViewModel.HistoryItem entry)
             return;
 
         List<FormatSnapshot> snapshots;
@@ -2549,7 +2054,7 @@ public partial class MainWindow : Window
 
     private void HistoryLoadIntoClipboard_Click(object sender, RoutedEventArgs e)
     {
-        if (HistoryListView.SelectedItem is not HistoryItem entry)
+        if (HistoryListView.SelectedItem is not MainWindowViewModel.HistoryItem entry)
             return;
 
         List<FormatSnapshot> snapshots;
@@ -2581,13 +2086,13 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (!_isMonitoring)
+        if (!_vm.IsMonitoring)
             RefreshFormats();
     }
 
     private void HistorySaveAs_Click(object sender, RoutedEventArgs e)
     {
-        if (HistoryListView.SelectedItem is not HistoryItem entry)
+        if (HistoryListView.SelectedItem is not MainWindowViewModel.HistoryItem entry)
             return;
 
         var dlg = new SaveFileDialog
@@ -2623,7 +2128,7 @@ public partial class MainWindow : Window
 
     private void HistoryDelete_Click(object sender, RoutedEventArgs e)
     {
-        if (HistoryListView.SelectedItem is not HistoryItem entry)
+        if (HistoryListView.SelectedItem is not MainWindowViewModel.HistoryItem entry)
             return;
 
         var confirm = MessageBox.Show(
@@ -2636,21 +2141,8 @@ public partial class MainWindow : Window
         if (confirm != MessageBoxResult.Yes)
             return;
 
-        var sessionId    = entry.SessionId;
-        var activeFilter = string.IsNullOrWhiteSpace(_historyFilter) ? null : _historyFilter;
-
-        _historyChannel.Writer.TryWrite(() =>
-        {
-            try { _history.DeleteSession(sessionId); }
-            catch { /* ignore write failure */ }
-
-            Dispatcher.InvokeAsync(() =>
-            {
-                if (_historySnapshots != null)
-                    RefreshFormats();
-                LoadHistoryFromDatabase(activeFilter);
-            });
-        });
+        var filter = string.IsNullOrWhiteSpace(_vm.SearchText) ? null : _vm.SearchText;
+        _vm.EnqueueDeleteSession(entry.SessionId, filter);
     }
 
     private void HistoryClearAll_Click(object sender, RoutedEventArgs e)
@@ -2665,18 +2157,7 @@ public partial class MainWindow : Window
         if (confirm != MessageBoxResult.Yes)
             return;
 
-        _historyChannel.Writer.TryWrite(() =>
-        {
-            try { _historyMaintenance.ClearHistory(); }
-            catch { /* ignore write failure */ }
-
-            Dispatcher.InvokeAsync(() =>
-            {
-                if (_historySnapshots != null)
-                    RefreshFormats();
-                LoadHistoryFromDatabase();
-            });
-        });
+        _vm.EnqueueClearAll();
     }
 
     private void ShowHistoryPanel()

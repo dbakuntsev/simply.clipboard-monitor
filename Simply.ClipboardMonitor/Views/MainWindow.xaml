@@ -26,10 +26,12 @@
                 <MenuItem x:Name="MenuItemMonitorChanges"
                           Header="_Monitor Changes"
                           IsCheckable="True"
+                          IsChecked="{Binding IsMonitoring, Mode=TwoWay}"
                           Click="MenuItemMonitorChanges_Click" />
                 <MenuItem x:Name="MenuItemTrackHistory"
                           Header="Track _History"
                           IsCheckable="True"
+                          IsChecked="{Binding IsTrackingHistory, Mode=TwoWay}"
                           Click="MenuItemTrackHistory_Click" />
                 <MenuItem x:Name="MenuItemPause" Header="_Pause" SubmenuOpened="PauseMenu_SubmenuOpened">
                     <MenuItem x:Name="MenuItemPause1m"  Header="1 minute"   Tag="1"  Click="MenuItemPause_Click" />
@@ -88,7 +90,7 @@
                 </StackPanel>
             </StatusBarItem>
             <StatusBarItem>
-                <TextBlock x:Name="StatusText" />
+                <TextBlock x:Name="StatusText" Text="{Binding StatusBarText}" />
             </StatusBarItem>
             <Separator x:Name="FileStatusSeparator" Visibility="Collapsed" />
             <StatusBarItem>
@@ -228,6 +230,7 @@
                             </Button>
                         </Grid>
                         <ListView x:Name="HistoryListView"
+                              ItemsSource="{Binding Sessions}"
                               SelectionChanged="HistoryListView_SelectionChanged"
                               ContextMenuOpening="HistoryContextMenu_Opening"
                               ScrollViewer.HorizontalScrollBarVisibility="Auto"
@@ -293,6 +296,7 @@
                 </GroupBox>
                 <!-- Overlays the GroupBox header line; background erases the border behind the text. -->
                 <TextBlock x:Name="HistoryCountTextBlock"
+                           Text="{Binding HistoryCountText}"
                            HorizontalAlignment="Right"
                            VerticalAlignment="Top"
                            Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}"

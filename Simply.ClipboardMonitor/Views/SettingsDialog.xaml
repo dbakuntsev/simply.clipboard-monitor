@@ -117,6 +117,35 @@
 
         <Separator Margin="0,16,0,0" />
 
+        <TextBlock Text="Format Notifications"
+                   FontWeight="SemiBold"
+                   Margin="0,16,0,8" />
+
+        <CheckBox x:Name="FormatNotificationsEnabledCheckBox"
+                  Margin="0,0,0,8">
+            <TextBlock Text="Show a system tray notification when a watched clipboard format appears:"
+                       TextWrapping="Wrap" />
+        </CheckBox>
+
+        <StackPanel x:Name="FormatNotificationPatternsPanel"
+                    IsEnabled="{Binding IsChecked, ElementName=FormatNotificationsEnabledCheckBox}"
+                    Margin="20,0,0,0">
+            <TextBox x:Name="FormatNotificationPatternsBox"
+                     AcceptsReturn="True"
+                     TextWrapping="NoWrap"
+                     VerticalScrollBarVisibility="Auto"
+                     HorizontalScrollBarVisibility="Auto"
+                     FontFamily="Consolas"
+                     Height="80" />
+            <TextBlock Text="One format name per line. Use * as a wildcard (e.g. x-custom-*). Case-insensitive."
+                       FontStyle="Italic"
+                       Opacity="0.7"
+                       Margin="0,4,0,0"
+                       TextWrapping="Wrap" />
+        </StackPanel>
+
+        <Separator Margin="0,16,0,0" />
+
         <TextBlock Text="Data Directory"
                    FontWeight="SemiBold"
                    Margin="0,16,0,8" />

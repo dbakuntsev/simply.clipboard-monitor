@@ -11,4 +11,6 @@ public sealed record SettingsDialogInput(
     bool         StartMinimized,
     bool         HotkeyEnabled,
     HotkeyBinding HotkeyBinding,
-    bool         HotkeyConflict);
+    bool         HotkeyConflict,
+    bool         FormatNotificationsEnabled,
+    string?      FormatNotificationPatterns);

@@ -13,10 +13,12 @@ namespace Simply.ClipboardMonitor.Services;
 public sealed record SettingsDialogResult(
     bool          Saved,
     bool          HistoryWasCleared,
-    int           MaxEntries           = 0,
-    int           MaxSizeMb            = 0,
-    bool          MinimizeToSystemTray = false,
-    bool          StartAtLogin         = false,
-    bool          StartMinimized       = false,
-    bool          HotkeyEnabled        = false,
-    HotkeyBinding HotkeyBinding        = default);
+    int           MaxEntries                 = 0,
+    int           MaxSizeMb                  = 0,
+    bool          MinimizeToSystemTray       = false,
+    bool          StartAtLogin               = false,
+    bool          StartMinimized             = false,
+    bool          HotkeyEnabled              = false,
+    HotkeyBinding HotkeyBinding              = default,
+    bool          FormatNotificationsEnabled = false,
+    string?       FormatNotificationPatterns = null);

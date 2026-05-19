@@ -45,10 +45,17 @@ public partial class SettingsDialog : Window
     /// <summary>The hotkey binding in effect when OK was pressed.</summary>
     public HotkeyBinding GlobalHotkeyBinding { get; private set; }
 
+    /// <summary>Whether format-arrival notifications were enabled when OK was pressed.</summary>
+    public bool FormatNotificationsEnabled { get; private set; }
+
+    /// <summary>The raw, multi-line pattern list as edited by the user when OK was pressed.</summary>
+    public string? FormatNotificationPatterns { get; private set; }
+
     internal SettingsDialog(
         int maxEntries, int maxSizeMb, IHistoryMaintenance history,
         bool minimizeToSystemTray, bool startAtLogin, bool startMinimized,
-        bool hotkeyEnabled, HotkeyBinding hotkeyBinding, bool hotkeyConflict)
+        bool hotkeyEnabled, HotkeyBinding hotkeyBinding, bool hotkeyConflict,
+        bool formatNotificationsEnabled, string? formatNotificationPatterns)
     {
         _history               = history;
         _hotkeyBinding         = hotkeyBinding;
@@ -56,14 +63,16 @@ public partial class SettingsDialog : Window
 
         InitializeComponent();
 
-        MaxEntriesBox.Text                = maxEntries.ToString();
-        MaxSizeMbBox.Text                 = maxSizeMb.ToString();
-        MinimizeToTrayCheckBox.IsChecked  = minimizeToSystemTray;
-        StartAtLoginCheckBox.IsChecked    = startAtLogin;
-        StartMinimizedCheckBox.IsChecked  = startMinimized;
-        HotkeyEnabledCheckBox.IsChecked   = hotkeyEnabled;
-        HotkeyCaptureBox.Text             = hotkeyBinding.ToString();
-        DataDirectoryPathRun.Text         = DataDirectory;
+        MaxEntriesBox.Text                          = maxEntries.ToString();
+        MaxSizeMbBox.Text                           = maxSizeMb.ToString();
+        MinimizeToTrayCheckBox.IsChecked            = minimizeToSystemTray;
+        StartAtLoginCheckBox.IsChecked              = startAtLogin;
+        StartMinimizedCheckBox.IsChecked            = startMinimized;
+        HotkeyEnabledCheckBox.IsChecked             = hotkeyEnabled;
+        HotkeyCaptureBox.Text                       = hotkeyBinding.ToString();
+        FormatNotificationsEnabledCheckBox.IsChecked = formatNotificationsEnabled;
+        FormatNotificationPatternsBox.Text          = formatNotificationPatterns ?? string.Empty;
+        DataDirectoryPathRun.Text                   = DataDirectory;
         RefreshDbSizeDisplay();
         UpdateConflictWarning();
     }
@@ -111,14 +120,16 @@ public partial class SettingsDialog : Window
         if (!ValidatePositiveInt(MaxSizeMbBox, "Maximum database size", out var sizeMb))
             return;
 
-        MaxEntries           = entries;
-        MaxSizeMb            = sizeMb;
-        MinimizeToSystemTray = MinimizeToTrayCheckBox.IsChecked  == true;
-        StartAtLogin         = StartAtLoginCheckBox.IsChecked    == true;
-        StartMinimized       = StartMinimizedCheckBox.IsChecked  == true;
-        HotkeyEnabled        = HotkeyEnabledCheckBox.IsChecked   == true;
-        GlobalHotkeyBinding  = _hotkeyBinding;
-        DialogResult         = true;
+        MaxEntries                 = entries;
+        MaxSizeMb                  = sizeMb;
+        MinimizeToSystemTray       = MinimizeToTrayCheckBox.IsChecked            == true;
+        StartAtLogin               = StartAtLoginCheckBox.IsChecked              == true;
+        StartMinimized             = StartMinimizedCheckBox.IsChecked            == true;
+        HotkeyEnabled              = HotkeyEnabledCheckBox.IsChecked             == true;
+        GlobalHotkeyBinding        = _hotkeyBinding;
+        FormatNotificationsEnabled = FormatNotificationsEnabledCheckBox.IsChecked == true;
+        FormatNotificationPatterns = FormatNotificationPatternsBox.Text;
+        DialogResult               = true;
     }
 
     private void CancelButton_Click(object sender, RoutedEventArgs e)

@@ -16,5 +16,7 @@ public sealed class UserPreferences
     public bool   TextWordWrap           { get; set; }
     public bool   HotkeyEnabled          { get; set; } = true;
     public string HotkeyBinding          { get; set; } = "Alt+Win+V";
+    public bool    FormatNotificationsEnabled  { get; set; }
+    public string? FormatNotificationPatterns { get; set; }
 }
 

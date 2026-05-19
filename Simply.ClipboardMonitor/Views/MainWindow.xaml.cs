@@ -75,6 +75,7 @@ public partial class MainWindow : Window
     private readonly IReadOnlyList<IFormatExporter> _formatExporters;
     private readonly IReadOnlyList<IPreviewTab>     _previewTabs;
     private readonly IClipboardOwnerService         _clipboardOwner;
+    private readonly IFormatNotificationMatcher     _formatNotificationMatcher;
 
     // ── ViewModel ─────────────────────────────────────────────────────────
     private readonly MainWindowViewModel _vm;
@@ -101,6 +102,10 @@ public partial class MainWindow : Window
     // Auto-start / start-minimized state
     private bool _startAtLogin;
     private bool _startMinimized;
+
+    // Format-arrival notification state
+    private bool    _formatNotificationsEnabled;
+    private string? _formatNotificationPatterns;
 
     // Selected format state — raw bytes and identity of the currently selected format
     private FormatSelectionState _formatState = new() { FormatName = string.Empty };
@@ -130,21 +135,23 @@ public partial class MainWindow : Window
         IClipboardFileRepository clipboardFiles,
         IClipboardOwnerService   clipboardOwner,
         IDialogService           dialogService,
+        IFormatNotificationMatcher formatNotificationMatcher,
         IEnumerable<IFormatExporter> formatExporters,
         IEnumerable<IPreviewTab>     previewTabs)
     {
-        _clipboardReader    = clipboardReader;
-        _clipboardWriter    = clipboardWriter;
-        _textDecoding       = textDecoding;
-        _formatClassifier   = formatClassifier;
-        _preferences        = preferences;
-        _history            = history;
-        _historyMaintenance = historyMaintenance;
-        _clipboardFiles     = clipboardFiles;
-        _clipboardOwner     = clipboardOwner;
-        _dialogService      = dialogService;
-        _formatExporters    = formatExporters.ToList().AsReadOnly();
-        _previewTabs        = previewTabs.ToList().AsReadOnly();
+        _clipboardReader           = clipboardReader;
+        _clipboardWriter           = clipboardWriter;
+        _textDecoding              = textDecoding;
+        _formatClassifier          = formatClassifier;
+        _preferences               = preferences;
+        _history                   = history;
+        _historyMaintenance        = historyMaintenance;
+        _clipboardFiles            = clipboardFiles;
+        _clipboardOwner            = clipboardOwner;
+        _dialogService             = dialogService;
+        _formatNotificationMatcher = formatNotificationMatcher;
+        _formatExporters           = formatExporters.ToList().AsReadOnly();
+        _previewTabs               = previewTabs.ToList().AsReadOnly();
 
         // Required for legacy OEM/ANSI code pages (e.g. CP437 used by CF_OEMTEXT) which
         // are not included in the default .NET encoding set.
@@ -201,12 +208,9 @@ public partial class MainWindow : Window
             NativeMethods.AddClipboardFormatListener(source.Handle);
         }
 
-        if (_trayState.MinimizeToTray)
-        {
-            InitializeTrayIcon();
-            if (_hotkeyEnabled)
-                TryRegisterHotkey();
-        }
+        RecomputeTrayIconPresence();
+        if (_trayState.MinimizeToTray && _hotkeyEnabled)
+            TryRegisterHotkey();
         UpdateHotkeyStatusBar();
 
         if (_startMinimized)
@@ -318,18 +322,31 @@ public partial class MainWindow : Window
     private void ApplyTraySettings(bool newValue)
     {
         _trayState.MinimizeToTray = newValue;
+        RecomputeTrayIconPresence();
         if (_trayState.MinimizeToTray)
         {
-            InitializeTrayIcon();
             RefreshHotkeyRegistration();
         }
         else
         {
-            DisposeTrayIcon();
             UnregisterHotkey();
             _hotkeyConflict = false;
             UpdateHotkeyStatusBar();
         }
+    }
+
+    /// <summary>
+    /// Adds or removes the system-tray icon to match the current feature set.
+    /// The icon must be present whenever the user enables hide-to-tray <em>or</em>
+    /// format-arrival notifications (the latter relies on Shell_NotifyIcon balloons).
+    /// </summary>
+    private void RecomputeTrayIconPresence()
+    {
+        var needed = _trayState.MinimizeToTray || _formatNotificationsEnabled;
+        if (needed && !_trayState.IconAdded)
+            InitializeTrayIcon();
+        else if (!needed && _trayState.IconAdded)
+            DisposeTrayIcon();
     }
 
     private void ApplyAutoStartPreference(bool newValue)
@@ -517,6 +534,18 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// Brings the main window to the foreground without toggling.  Shows it if hidden,
+    /// restores it if minimized, and preserves a Maximized state if the user had it.
+    /// Used by the format-notification balloon click handler.
+    /// </summary>
+    private void ShowAndActivateMainWindow()
+    {
+        if (!IsVisible) Show();
+        if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
+        Activate();
+    }
+
     private unsafe void ShowTrayBalloonIfNeeded()
     {
         if (_trayState.BalloonShown || !_trayState.IconAdded || _hwndSource == null)
@@ -535,6 +564,55 @@ public partial class MainWindow : Window
         };
         CopyToFixed(nid.szInfoTitle, 64,  "Simply.ClipboardMonitor");
         CopyToFixed(nid.szInfo,      256, "The application is still running in the system tray.");
+        NativeMethods.Shell_NotifyIcon(NativeMethods.NIM_MODIFY, ref nid);
+    }
+
+    /// <summary>
+    /// Called from <see cref="WndProc"/> immediately after a clipboard update has
+    /// been refreshed.  Shows a single tray balloon listing every watched format
+    /// name present on the new clipboard contents (or does nothing when the
+    /// feature is disabled, no patterns match, or the tray icon is unavailable).
+    /// </summary>
+    private void TryShowFormatNotification()
+    {
+        if (!_formatNotificationMatcher.HasActivePatterns || _formats.Count == 0)
+            return;
+
+        var matched = _formatNotificationMatcher.Match(_formats.Select(f => f.Name));
+        if (matched.Count == 0)
+            return;
+
+        if (!_trayState.IconAdded || _hwndSource == null)
+            return; // Silently skip when the tray icon is missing (e.g. couldn't initialize).
+
+        var ownerLine = _clipboardOwner.Resolve()?.DisplayText ?? "Owner: (unknown)";
+
+        // Sum sizes of the matched formats only — total over all formats can be misleading
+        // because formats often share their underlying payload (e.g. text in multiple encodings).
+        var matchedSet  = new HashSet<string>(matched, StringComparer.OrdinalIgnoreCase);
+        var matchedSize = _formats.Where(f => matchedSet.Contains(f.Name)).Sum(f => f.ContentSizeValue);
+
+        var title = matched.Count == 1
+            ? $"Clipboard format: {matched[0]}"
+            : $"Clipboard formats matched ({matched.Count})";
+
+        var body = $"{string.Join(", ", matched)}\n{ownerLine}\nSize: {DisplayHelper.FormatFileSize(matchedSize)}";
+
+        ShowFormatNotificationBalloon(title, body);
+    }
+
+    private unsafe void ShowFormatNotificationBalloon(string title, string body)
+    {
+        var nid = new NativeMethods.NOTIFYICONDATA
+        {
+            cbSize      = (uint)sizeof(NativeMethods.NOTIFYICONDATA),
+            hWnd        = _hwndSource!.Handle,
+            uID         = 1,
+            uFlags      = NativeMethods.NIF_INFO,
+            dwInfoFlags = NativeMethods.NIIF_INFO,
+        };
+        CopyToFixed(nid.szInfoTitle, 64,  title);
+        CopyToFixed(nid.szInfo,      256, body);
         NativeMethods.Shell_NotifyIcon(NativeMethods.NIM_MODIFY, ref nid);
     }
 
@@ -648,6 +726,13 @@ public partial class MainWindow : Window
                 RefreshFormats();
                 if (_vm.IsTrackingHistory)
                     CaptureHistorySession(seqAtArrival);
+
+                // Skip notification when the sequence number advanced — a delayed-rendering
+                // provider (e.g. Firefox for HTML) re-posted WM_CLIPBOARDUPDATE during our
+                // reads, and the next message will be the final, stable one.  Without this
+                // guard the user sees the same balloon twice for a single clipboard set.
+                if (_clipboardReader.GetSequenceNumber() == seqAtArrival)
+                    TryShowFormatNotification();
             }
             handled = true;
         }
@@ -658,8 +743,9 @@ public partial class MainWindow : Window
         }
         else if (msg == WM_TRAYICON)
         {
-            const int WM_LBUTTONUP = 0x0202;
-            const int WM_RBUTTONUP = 0x0205;
+            const int WM_LBUTTONUP         = 0x0202;
+            const int WM_RBUTTONUP         = 0x0205;
+            const int NIN_BALLOONUSERCLICK = 0x0405; // WM_USER + 5
             var notification = (int)(lParam.ToInt64() & 0xFFFF);
             if (notification == WM_LBUTTONUP)
             {
@@ -669,6 +755,11 @@ public partial class MainWindow : Window
             else if (notification == WM_RBUTTONUP)
             {
                 ShowTrayContextMenu();
+                handled = true;
+            }
+            else if (notification == NIN_BALLOONUSERCLICK)
+            {
+                ShowAndActivateMainWindow();
                 handled = true;
             }
         }
@@ -978,7 +1069,8 @@ public partial class MainWindow : Window
         var result = _dialogService.ShowSettings(new SettingsDialogInput(
             _vm.MaxEntries, _vm.MaxSizeMb,
             _trayState.MinimizeToTray, _startAtLogin, _startMinimized,
-            _hotkeyEnabled, _hotkeyBinding, _hotkeyConflict));
+            _hotkeyEnabled, _hotkeyBinding, _hotkeyConflict,
+            _formatNotificationsEnabled, _formatNotificationPatterns));
 
         if (result.HistoryWasCleared)
             _vm.OnHistoryCleared();
@@ -998,10 +1090,20 @@ public partial class MainWindow : Window
             _hotkeyBinding = result.HotkeyBinding;
         }
 
+        // Update format-notification state before tray adjustments so that
+        // RecomputeTrayIconPresence sees the new value.
+        _formatNotificationsEnabled = result.FormatNotificationsEnabled;
+        _formatNotificationPatterns = result.FormatNotificationPatterns;
+        _formatNotificationMatcher.Configure(_formatNotificationsEnabled, _formatNotificationPatterns);
+
         if (result.MinimizeToSystemTray != _trayState.MinimizeToTray)
             ApplyTraySettings(result.MinimizeToSystemTray);
         else if (hotkeySettingsChanged)
             RefreshHotkeyRegistration();
+
+        // Format-notification toggling may change the tray-icon requirement
+        // even when MinimizeToSystemTray didn't change.
+        RecomputeTrayIconPresence();
 
         if (result.StartAtLogin != _startAtLogin)
             ApplyAutoStartPreference(result.StartAtLogin);
@@ -1372,6 +1474,9 @@ public partial class MainWindow : Window
             _hotkeyEnabled            = preferences.HotkeyEnabled;
             _hotkeyBinding            = HotkeyBinding.TryParse(preferences.HotkeyBinding, out var hb)
                                             ? hb : HotkeyBinding.Default;
+            _formatNotificationsEnabled = preferences.FormatNotificationsEnabled;
+            _formatNotificationPatterns = preferences.FormatNotificationPatterns;
+            _formatNotificationMatcher.Configure(_formatNotificationsEnabled, _formatNotificationPatterns);
         }
         catch
         {
@@ -1413,6 +1518,8 @@ public partial class MainWindow : Window
             TextWordWrap         = _previewTabs.OfType<TextPreviewControl>().FirstOrDefault()?.WordWrap ?? false,
             HotkeyEnabled        = _hotkeyEnabled,
             HotkeyBinding        = _hotkeyBinding.ToString(),
+            FormatNotificationsEnabled = _formatNotificationsEnabled,
+            FormatNotificationPatterns = _formatNotificationPatterns,
         };
 
         _preferences.Save(preferences);

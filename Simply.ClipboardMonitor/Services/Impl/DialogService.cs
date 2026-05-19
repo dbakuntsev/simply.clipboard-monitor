@@ -19,22 +19,25 @@ internal sealed class DialogService : IDialogService
         var dlg = new SettingsDialog(
             input.MaxEntries, input.MaxSizeMb, _historyMaintenance,
             input.MinimizeToSystemTray, input.StartAtLogin, input.StartMinimized,
-            input.HotkeyEnabled, input.HotkeyBinding, input.HotkeyConflict)
+            input.HotkeyEnabled, input.HotkeyBinding, input.HotkeyConflict,
+            input.FormatNotificationsEnabled, input.FormatNotificationPatterns)
         { Owner = Owner };
 
         dlg.ShowDialog();
 
         return dlg.DialogResult == true
             ? new SettingsDialogResult(
-                Saved:                true,
-                HistoryWasCleared:    dlg.HistoryWasCleared,
-                MaxEntries:           dlg.MaxEntries,
-                MaxSizeMb:            dlg.MaxSizeMb,
-                MinimizeToSystemTray: dlg.MinimizeToSystemTray,
-                StartAtLogin:         dlg.StartAtLogin,
-                StartMinimized:       dlg.StartMinimized,
-                HotkeyEnabled:        dlg.HotkeyEnabled,
-                HotkeyBinding:        dlg.GlobalHotkeyBinding)
+                Saved:                      true,
+                HistoryWasCleared:          dlg.HistoryWasCleared,
+                MaxEntries:                 dlg.MaxEntries,
+                MaxSizeMb:                  dlg.MaxSizeMb,
+                MinimizeToSystemTray:       dlg.MinimizeToSystemTray,
+                StartAtLogin:               dlg.StartAtLogin,
+                StartMinimized:             dlg.StartMinimized,
+                HotkeyEnabled:              dlg.HotkeyEnabled,
+                HotkeyBinding:              dlg.GlobalHotkeyBinding,
+                FormatNotificationsEnabled: dlg.FormatNotificationsEnabled,
+                FormatNotificationPatterns: dlg.FormatNotificationPatterns)
             : new SettingsDialogResult(Saved: false, HistoryWasCleared: dlg.HistoryWasCleared);
     }
 

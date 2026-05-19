@@ -12,6 +12,7 @@ It shows:
 - Image preview (for image-like formats).
 - A scrollable history of past clipboard changes, with per-session format previews and drag-and-drop support for transferring history entries directly into other applications.
 - The process that currently owns the clipboard, shown in the status bar with full path and command line in a tooltip.
+- Optional system-tray notifications when a user-defined clipboard format name (with wildcard support) appears on the clipboard.
 
 ![Screenshot of Basic operation, HEX Preview](.github/screenshots/demo1.png)
 ![Screenshot of History Tracking, Image Preview](.github/screenshots/demo2.png)
@@ -257,6 +258,43 @@ If the chosen combination is already registered by another application, a confli
 
 Pressing the hotkey when the window is hidden shows and activates it; pressing it when the window is already in the foreground hides it to the tray.
 
+## Format Notifications
+
+The application can show a system-tray notification (balloon) whenever a clipboard update contains one or more watched format names. This is useful when waiting for a specific clipboard format to be produced — for example, a vendor-specific format like `x-custom-internal`, or any of the standard text/HTML/image formats.
+
+### Configuring watched formats
+
+Open **File → Settings**, scroll to the **Format Notifications** section, and:
+
+- Check **Show a system tray notification when a watched clipboard format appears**.
+- Enter one or more format-name patterns in the multi-line text box, one per line:
+  - `*` is a wildcard (e.g. `x-custom-*` matches `x-custom-internal`, `x-custom-foo`, etc.).
+  - Patterns may match any clipboard format name, including well-known names like `CF_TEXT`, `CF_UNICODETEXT`, or `HTML Format`.
+  - Matching is case-insensitive against the full format name; surrounding whitespace is trimmed.
+  - Blank lines are ignored.
+
+### Notification contents
+
+When at least one watched pattern matches the formats present after a clipboard update, a single balloon is shown listing:
+
+- The matched format name(s).
+- The owner process (e.g. `Owner: chrome.exe (12345)`).
+- The combined size of the matched formats.
+
+Only one notification is shown per clipboard change, even when multiple watched patterns match.
+
+Clicking the balloon shows or activates the main application window.
+
+### Behavior
+
+- The system-tray icon is kept visible whenever Format Notifications are enabled, even if **Minimize to System Tray** is off — Windows tray balloons require an associated icon. Disabling both settings removes the tray icon again.
+- Notifications are suppressed while monitoring is paused or disabled.
+- When a clipboard update is produced by a delayed-rendering provider (such as Firefox for HTML), only the final, stable update fires a notification — duplicate balloons for a single user copy action are filtered out via the same sequence-number guard used for history capture.
+
+### Persisted preference
+
+The enable flag and the pattern text are stored alongside other settings in `%LOCALAPPDATA%\Simply.ClipboardMonitor\preferences.json` as `FormatNotificationsEnabled` and `FormatNotificationPatterns`.
+
 ## Auto-Start
 
 Open **File → Settings** to configure how the application starts.
@@ -412,7 +450,7 @@ A **Save As** dialog opens with the file name pre-set to `clipboard-{format_name
 - `Simply.ClipboardMonitor/App.xaml` / `App.xaml.cs` — WPF application entry point; builds the DI container and registers all services, strategies, exporters, and preview tab controls
 - `Simply.ClipboardMonitor/Views/MainWindow.xaml` / `MainWindow.xaml.cs` — main window (clipboard listener, format list, history, export, sort, preferences); preview tabs are populated dynamically from `IEnumerable<IPreviewTab>` injected at construction
 - `Simply.ClipboardMonitor/Views/AboutDialog.xaml` / `AboutDialog.xaml.cs` — About dialog
-- `Simply.ClipboardMonitor/Views/SettingsDialog.xaml` / `SettingsDialog.xaml.cs` — Settings dialog (history limits, database size display, clear history, minimize-to-tray, start-at-login, start-minimized toggles, data directory link)
+- `Simply.ClipboardMonitor/Views/SettingsDialog.xaml` / `SettingsDialog.xaml.cs` — Settings dialog (history limits, database size display, clear history, minimize-to-tray, start-at-login, start-minimized toggles, global hotkey, format-notification enable flag and pattern list, data directory link)
 - `Simply.ClipboardMonitor/Views/CrashDialog.xaml` / `CrashDialog.xaml.cs` — Crash dialog shown on unhandled exceptions; displays a clickable link to the error log file
 - `Simply.ClipboardMonitor/Views/DatabaseCorruptionDialog.xaml` / `DatabaseCorruptionDialog.xaml.cs` — Modal dialog shown when `history.db` fails an integrity check; offers Recover / Delete and Start Fresh / Disable History Tracking choices (also used as a two-option dialog after a failed recovery attempt)
 - `Simply.ClipboardMonitor/Views/DatabaseRecoveringWindow.xaml` / `DatabaseRecoveringWindow.xaml.cs` — Non-closeable "Recovering…" progress window shown while database recovery runs in the background
@@ -430,7 +468,7 @@ Data-transfer records and plain model classes with no service dependencies.
 - `Models/SavedClipboardFormat.cs` — format row stored in / loaded from a `.clipdb` file
 - `Models/SessionEntry.cs` — one row from the history sessions table
 - `Models/TextDecodeResult.cs` — result of a single text-decode attempt (text, encoding, success/failure)
-- `Models/UserPreferences.cs` — top-level user preferences (sort property/direction, monitor/history settings, limits, minimize-to-tray, start-at-login, start-minimized toggles, balloon-shown flag, text word-wrap state, global hotkey enabled flag and binding string)
+- `Models/UserPreferences.cs` — top-level user preferences (sort property/direction, monitor/history settings, limits, minimize-to-tray, start-at-login, start-minimized toggles, balloon-shown flag, text word-wrap state, global hotkey enabled flag and binding string, format-notification enable flag and pattern list)
 
 ### Services
 Public domain service interfaces consumed by the main window and DI wiring.
@@ -441,6 +479,7 @@ Public domain service interfaces consumed by the main window and DI wiring.
 - `Services/IClipboardWriter.cs` — restore saved formats back onto the clipboard
 - `Services/IFormatClassifier.cs` — classify formats into colored pills and tooltip text for the history list
 - `Services/IFormatExporter.cs` — export a clipboard format to a file (one implementation per output type)
+- `Services/IFormatNotificationMatcher.cs` — case-insensitive, wildcard-aware (`*`) matcher used by the Format Notifications feature to decide whether a clipboard update should trigger a tray balloon
 - `Services/IHistoryMaintenance.cs` — database maintenance operations (schema migration, enforce size limits, clear history, integrity check, recovery, delete, create fresh database)
 - `Services/IHistoryRepository.cs` — clipboard history persistence (add session, load sessions with optional filter, load session formats, delete a single session, total session count, duplicate detection)
 - `Services/DatabaseIntegrityStatus.cs` — `Absent` / `Healthy` / `Corrupted` enum returned by `IHistoryMaintenance.CheckIntegrity()`
@@ -470,6 +509,7 @@ Concrete service implementations. All classes are `internal sealed`.
 - `Services/Impl/ClipboardReaderService.cs` — Win32 clipboard reading; dispatches per-handle-type work to injected `IHandleReadStrategy` implementations
 - `Services/Impl/ClipboardWriterService.cs` — Win32 clipboard writing; dispatches per-handle-type work to injected `IHandleWriteStrategy` implementations
 - `Services/Impl/FormatClassifierService.cs` — produces colored pills and tooltip text for the history list
+- `Services/Impl/FormatNotificationMatcher.cs` — compiles each user-supplied pattern into a case-insensitive, whole-string regex (with `*` mapped to `.*`); exposes `Configure(enabled, patternsText)` and `Match(formatNames)` returning the distinct matched names
 - `Services/Impl/HistoryRepository.cs` — history database (SQLite, ZStandard compression, SHA-256 deduplication, session trimming, single-session deletion with orphan cleanup, schema migration, integrity check, three-strategy recovery, fresh-database initialization, duplicate detection); implements both `IHistoryRepository` and `IHistoryMaintenance`
 - `Services/Impl/ImagePreviewService.cs` — decodes DIB, HBITMAP-derived, and encoded image formats into WPF `BitmapSource` objects
 - `Services/Impl/PreferencesService.cs` — JSON preferences persisted to `%LOCALAPPDATA%\Simply.ClipboardMonitor\preferences.json`
@@ -521,6 +561,7 @@ The test suite covers:
 | `DisplayHelperTests` | Zero, byte, KB, MB, GB boundary values; correct decimal rounding at 1.5× scale in all three ranges |
 | `HexRowCollectionTests` | Row count (empty/exact/partial), offset formatting, hex pair content and padding, ASCII printable/non-printable mapping, out-of-range indexer, row caching, enumeration |
 | `HistoryRepositoryTests` | `GetSessionCount`, `AddSession` with and without trim, `LoadSessions` (order, filter match/no-match), `LoadSessionFormats` with byte round-trip, `DeleteSession` (count, format removal, other sessions unaffected, shared blob preservation), `ClearHistory`, `IsDuplicateOfLastSession`, `EnforceLimits` (verifies the *oldest* sessions are removed), `BuildFormatsText` (name and truncation) |
+| `FormatNotificationMatcherTests` | Enabled/disabled gating, empty and whitespace-only pattern lists, case-insensitive exact match, wildcard prefix/suffix/infix/star-only matches, multi-line pattern lists, duplicate format-name suppression, format names matched by multiple patterns, surrounding-whitespace trimming, `Configure` replacing previous state, null/empty format names ignored |
 
 `HistoryRepositoryTests` are integration tests that write to a temporary SQLite file created per test class instance; each directory is deleted in `Dispose`.
 

@@ -239,7 +239,7 @@ public partial class MainWindow : Window
               {
                   HideHistoryLoadingOverlay();
                   CaptureStartupSession();
-                  _vm.LoadHistoryFromDatabase(selectFirst: true);
+                  _vm.LoadHistoryFromDatabase(selectLive: true);
               })
             : null;
         _vm.EnqueueDatabaseInitialization(isTracking, onReady);
@@ -790,6 +790,11 @@ public partial class MainWindow : Window
         }
 
         UpdateClipboardOwner();
+
+        // Push the current live clipboard formats onto the [Live Clipboard] sentinel row
+        // so its pills, tooltip, and size always reflect reality, even while a real history
+        // entry is selected.
+        _vm.UpdateLiveRow(_formats);
     }
 
     private void FormatListBox_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -1678,6 +1683,10 @@ public partial class MainWindow : Window
         {
             ShowHistoryPanel();
             ShowHistoryLoadingOverlay();
+            // Refresh the sentinel row from the current _formats so [Live Clipboard]
+            // reflects the actual clipboard the moment the panel becomes visible — even
+            // before the first WM_CLIPBOARDUPDATE after enabling tracking arrives.
+            _vm.UpdateLiveRow(_formats);
             // Defer loading until integrity check and migration complete on the channel.
             _vm.EnqueueDatabaseInitialization(
                 isTrackingHistory: true,
@@ -1685,7 +1694,7 @@ public partial class MainWindow : Window
                 {
                     HideHistoryLoadingOverlay();
                     CaptureStartupSession();
-                    _vm.LoadHistoryFromDatabase(selectFirst: true);
+                    _vm.LoadHistoryFromDatabase(selectLive: true);
                 }));
         }
         else
@@ -1705,6 +1714,19 @@ public partial class MainWindow : Window
             return;
         }
         _vm.SelectedSession = entry;
+
+        if (entry.IsLive)
+        {
+            // [Live Clipboard] sentinel: show the actual clipboard, not a stored snapshot.
+            // Only re-read when we're currently displaying snapshot data — otherwise the live
+            // view is already on screen (e.g. just after a write, RefreshFormats already ran).
+            if (_historySnapshots != null)
+            {
+                _historySnapshots = null;
+                RefreshFormats();
+            }
+            return;
+        }
 
         List<FormatSnapshot> snapshots;
         try
@@ -1776,10 +1798,11 @@ public partial class MainWindow : Window
                     {
                         var filter = string.IsNullOrWhiteSpace(_vm.SearchText) ? null : _vm.SearchText;
                         if (filter == null)
-                            // Filter removed: show all history and select the latest entry (req 5).
-                            _vm.LoadHistoryFromDatabase(null, selectFirst: true);
+                            // Filter removed: show all history and select the [Live Clipboard] sentinel.
+                            _vm.LoadHistoryFromDatabase(null, selectLive: true);
                         else
-                            // Filter changed: keep the current selection if still visible (req 4).
+                            // Filter changed: keep the current selection if still visible (falls
+                            // back to the sentinel when the previously selected entry is filtered out).
                             _vm.LoadHistoryFromDatabase(filter, _vm.SelectedSession?.SessionId);
                     }
                 });
@@ -1855,12 +1878,22 @@ public partial class MainWindow : Window
 
     private void HistoryContextMenu_Opening(object sender, ContextMenuEventArgs e)
     {
-        var hasSelection = HistoryListView.SelectedItem is MainWindowViewModel.HistoryItem;
-        HistoryMenuLoadIntoClipboard.IsEnabled = hasSelection
+        var selection    = HistoryListView.SelectedItem as MainWindowViewModel.HistoryItem;
+        var hasSelection = selection != null;
+        var isLive       = selection?.IsLive ?? false;
+
+        // Load: only meaningful for a real entry whose data isn't already on the clipboard.
+        HistoryMenuLoadIntoClipboard.IsEnabled = hasSelection && !isLive
             && _historySnapshots != null
             && !IsHistorySessionCurrentClipboard(_historySnapshots);
-        HistoryMenuSaveAs.IsEnabled  = hasSelection;
-        HistoryMenuDelete.IsEnabled  = hasSelection;
+
+        // Save As: real entry → save snapshot blobs.  Sentinel → save the live clipboard
+        // (handled by HistorySaveAs_Click branching).  Disabled on the sentinel when the
+        // clipboard is empty since there's nothing to save.
+        HistoryMenuSaveAs.IsEnabled = hasSelection && (!isLive || _formats.Count > 0);
+
+        // Delete: only valid for real entries — the sentinel is not persisted.
+        HistoryMenuDelete.IsEnabled = hasSelection && !isLive;
     }
 
     /// <summary>
@@ -2163,6 +2196,8 @@ public partial class MainWindow : Window
     {
         if (HistoryListView.SelectedItem is not MainWindowViewModel.HistoryItem entry)
             return;
+        if (entry.IsLive)
+            return;  // [Live Clipboard] IS the clipboard — nothing to load.
 
         List<FormatSnapshot> snapshots;
         try
@@ -2202,6 +2237,14 @@ public partial class MainWindow : Window
         if (HistoryListView.SelectedItem is not MainWindowViewModel.HistoryItem entry)
             return;
 
+        if (entry.IsLive)
+        {
+            // [Live Clipboard]: save the live clipboard, not a stored session.  Reuses the
+            // existing File-menu "Save As" path (dialog + SaveToFile over _formats).
+            MenuItemSaveAs_Click(sender, e);
+            return;
+        }
+
         var dlg = new SaveFileDialog
         {
             Title           = "Save Clipboard Database",
@@ -2237,6 +2280,8 @@ public partial class MainWindow : Window
     {
         if (HistoryListView.SelectedItem is not MainWindowViewModel.HistoryItem entry)
             return;
+        if (entry.IsLive)
+            return;  // sentinel is not persisted — nothing to delete.
 
         var confirm = MessageBox.Show(
             this,

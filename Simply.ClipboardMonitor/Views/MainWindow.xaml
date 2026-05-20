@@ -262,28 +262,49 @@
                                     <GridViewColumn.CellTemplate>
                                         <DataTemplate>
                                             <!-- One coloured pill per recognised format category:
-                                                 IMG TXT HTML RTF FILE  — OTHER when none match -->
-                                            <ItemsControl ItemsSource="{Binding Pills}"
-                                                          ToolTip="{Binding FormatsTooltip}">
-                                                <ItemsControl.ItemsPanel>
-                                                    <ItemsPanelTemplate>
-                                                        <StackPanel Orientation="Horizontal" />
-                                                    </ItemsPanelTemplate>
-                                                </ItemsControl.ItemsPanel>
-                                                <ItemsControl.ItemTemplate>
-                                                    <DataTemplate>
-                                                        <Border Background="{Binding Background}"
-                                                                CornerRadius="3"
-                                                                Padding="5,1"
-                                                                Margin="0,0,3,0">
-                                                            <TextBlock Text="{Binding Label}"
-                                                                       Foreground="White"
-                                                                       FontSize="10"
-                                                                       FontWeight="Bold" />
-                                                        </Border>
-                                                    </DataTemplate>
-                                                </ItemsControl.ItemTemplate>
-                                            </ItemsControl>
+                                                 IMG TXT HTML RTF FILE  — OTHER when none match.
+                                                 The "Empty clipboard" placeholder is shown only on
+                                                 the [Live Clipboard] sentinel row when there are
+                                                 no formats on the clipboard. -->
+                                            <Grid>
+                                                <ItemsControl ItemsSource="{Binding Pills}"
+                                                              ToolTip="{Binding FormatsTooltip}">
+                                                    <ItemsControl.ItemsPanel>
+                                                        <ItemsPanelTemplate>
+                                                            <StackPanel Orientation="Horizontal" />
+                                                        </ItemsPanelTemplate>
+                                                    </ItemsControl.ItemsPanel>
+                                                    <ItemsControl.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <Border Background="{Binding Background}"
+                                                                    CornerRadius="3"
+                                                                    Padding="5,1"
+                                                                    Margin="0,0,3,0">
+                                                                <TextBlock Text="{Binding Label}"
+                                                                           Foreground="White"
+                                                                           FontSize="10"
+                                                                           FontWeight="Bold" />
+                                                            </Border>
+                                                        </DataTemplate>
+                                                    </ItemsControl.ItemTemplate>
+                                                </ItemsControl>
+                                                <TextBlock Text="Empty clipboard"
+                                                           Foreground="DimGray"
+                                                           FontStyle="Italic"
+                                                           FontSize="11"
+                                                           VerticalAlignment="Center">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Setter Property="Visibility" Value="Collapsed" />
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding ShowEmptyClipboardPlaceholder}" Value="True">
+                                                                    <Setter Property="Visibility" Value="Visible" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
+                                            </Grid>
                                         </DataTemplate>
                                     </GridViewColumn.CellTemplate>
                                 </GridViewColumn>

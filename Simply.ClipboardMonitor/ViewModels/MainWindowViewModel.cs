@@ -19,21 +19,79 @@ internal sealed class MainWindowViewModel : ObservableObject
     // ── Inner data models ────────────────────────────────────────────────────
 
     /// <summary>
-    /// Represents one persisted clipboard session shown in the history panel.
+    /// Represents one persisted clipboard session shown in the history panel,
+    /// or the synthetic [Live Clipboard] sentinel row when <see cref="IsLive"/> is <c>true</c>.
     /// </summary>
-    internal sealed class HistoryItem
+    internal sealed class HistoryItem : ObservableObject
     {
+        /// <summary>SessionId reserved for the synthetic [Live Clipboard] sentinel row.</summary>
+        public const long LiveSessionId = -1L;
+
         public required long     SessionId      { get; init; }
         public required DateTime Timestamp      { get; init; }
         public required string   FormatsText    { get; init; }
         public required long     TotalSize      { get; init; }
         public required IReadOnlyList<(uint FormatId, string FormatName)> Formats { get; init; }
 
-        public IReadOnlyList<FormatPill> Pills          { get; init; } = [];
-        public string                    FormatsTooltip { get; init; } = string.Empty;
+        /// <summary>
+        /// True for the synthetic [Live Clipboard] sentinel row pinned at the top of the
+        /// history list whenever history tracking is enabled.  Sentinel rows are not persisted.
+        /// </summary>
+        public bool IsLive { get; init; }
 
-        public string DateText => Timestamp.ToString("yyyy-MM-dd HH:mm:ss");
-        public string SizeText => DisplayHelper.FormatFileSize(TotalSize);
+        private IReadOnlyList<FormatPill> _pills = [];
+        /// <summary>
+        /// Pills shown in the Formats column. Mutable on the sentinel row so its pills can
+        /// be refreshed on every clipboard change; written once on real entries.
+        /// </summary>
+        public IReadOnlyList<FormatPill> Pills
+        {
+            get => _pills;
+            set
+            {
+                if (SetProperty(ref _pills, value))
+                    OnPropertyChanged(nameof(ShowEmptyClipboardPlaceholder));
+            }
+        }
+
+        private string _formatsTooltip = string.Empty;
+        public string FormatsTooltip
+        {
+            get => _formatsTooltip;
+            set => SetProperty(ref _formatsTooltip, value);
+        }
+
+        private long _liveTotalSize;
+        /// <summary>
+        /// Total byte-size of the current live clipboard (sum of positive
+        /// <see cref="ClipboardFormatItem.ContentSizeValue"/>).  Meaningful only on the
+        /// sentinel row; updated on every clipboard change via <see cref="UpdateLiveRow"/>.
+        /// </summary>
+        public long LiveTotalSize
+        {
+            get => _liveTotalSize;
+            set
+            {
+                if (SetProperty(ref _liveTotalSize, value))
+                    OnPropertyChanged(nameof(SizeText));
+            }
+        }
+
+        public string DateText => IsLive ? "Live" : Timestamp.ToString("yyyy-MM-dd HH:mm:ss");
+
+        /// <summary>
+        /// Sentinel: blank when the clipboard is empty / all sizes unknown; otherwise the
+        /// formatted live total.  Real entries: the persisted <see cref="TotalSize"/>.
+        /// </summary>
+        public string SizeText => IsLive
+            ? (LiveTotalSize > 0 ? DisplayHelper.FormatFileSize(LiveTotalSize) : string.Empty)
+            : DisplayHelper.FormatFileSize(TotalSize);
+
+        /// <summary>
+        /// True only for the sentinel row when the current live clipboard has no formats —
+        /// drives the "Empty clipboard" placeholder shown in the Formats column.
+        /// </summary>
+        public bool ShowEmptyClipboardPlaceholder => IsLive && Pills.Count == 0;
     }
 
     private record SessionPayload(
@@ -147,6 +205,44 @@ internal sealed class MainWindowViewModel : ObservableObject
 
     /// <summary>The list of clipboard history sessions bound to <c>HistoryListView</c>.</summary>
     public ObservableCollection<HistoryItem> Sessions { get; } = [];
+
+    // ── [Live Clipboard] sentinel row ────────────────────────────────────────
+
+    private HistoryItem? _liveItem;
+    /// <summary>
+    /// The synthetic [Live Clipboard] row pinned at the top of <see cref="Sessions"/>
+    /// whenever history tracking is enabled.  Lazily created; never persisted.
+    /// Its <see cref="HistoryItem.Pills"/> and <see cref="HistoryItem.FormatsTooltip"/>
+    /// are refreshed on every WM_CLIPBOARDUPDATE via <see cref="UpdateLivePills"/>.
+    /// </summary>
+    internal HistoryItem LiveItem => _liveItem ??= new HistoryItem
+    {
+        SessionId   = HistoryItem.LiveSessionId,
+        Timestamp   = DateTime.MinValue,
+        FormatsText = string.Empty,
+        TotalSize   = 0,
+        Formats     = Array.Empty<(uint FormatId, string FormatName)>(),
+        IsLive      = true,
+    };
+
+    /// <summary>
+    /// Recomputes the [Live Clipboard] sentinel's pills, tooltip, and total byte-size
+    /// from the current live clipboard formats.  Safe to call on every WM_CLIPBOARDUPDATE —
+    /// the row updates regardless of which entry is selected.  Must be called on the UI thread.
+    /// </summary>
+    internal void UpdateLiveRow(IReadOnlyList<ClipboardFormatItem> formats)
+    {
+        var tuples = formats.Select(f => (f.FormatId, f.Name)).ToList();
+        LiveItem.Pills          = _formatClassifier.ComputePills(tuples);
+        LiveItem.FormatsTooltip = _formatClassifier.ComputeTooltip(tuples);
+        // Sum only known sizes; -1 (n/a) entries are skipped, matching how each format's
+        // OriginalSize is computed during CaptureAllFormats.
+        long total = 0;
+        foreach (var f in formats)
+            if (f.ContentSizeValue > 0)
+                total += f.ContentSizeValue;
+        LiveItem.LiveTotalSize = total;
+    }
 
     // ── Mutable state ─────────────────────────────────────────────────────────
 
@@ -542,8 +638,8 @@ internal sealed class MainWindowViewModel : ObservableObject
         }
         finally
         {
-            // Reload the list and select the newest entry in all cases.
-            _dispatcher.InvokeAsync(() => LoadHistoryFromDatabase(null, selectFirst: true));
+            // Reload the list and select the [Live Clipboard] sentinel in all cases.
+            _dispatcher.InvokeAsync(() => LoadHistoryFromDatabase(null, selectLive: true));
         }
     }
 
@@ -572,12 +668,14 @@ internal sealed class MainWindowViewModel : ObservableObject
                 {
                     if (string.IsNullOrEmpty(activeFilter))
                     {
-                        // Trimmed with no active filter: reload and select the newest entry.
-                        LoadHistoryFromDatabase(null, selectFirst: true);
+                        // Trimmed with no active filter: reload and select the sentinel.
+                        LoadHistoryFromDatabase(null, selectLive: true);
                     }
                     else
                     {
-                        // Filter is active: reload filtered list, preserving the current selection.
+                        // Filter is active: reload filtered list, preserving the current selection
+                        // (falls back to the sentinel when the previously selected real entry is
+                        // no longer in the filtered set).
                         LoadHistoryFromDatabase(activeFilter, SelectedSession?.SessionId);
                     }
                 }
@@ -593,8 +691,11 @@ internal sealed class MainWindowViewModel : ObservableObject
                         Pills          = payload.Pills,
                         FormatsTooltip = payload.Tooltip,
                     };
-                    Sessions.Insert(0, entry);
-                    _setSelectedHistoryItem(entry);
+                    // Insert below the [Live Clipboard] sentinel (which sits at index 0).
+                    var insertIndex = (Sessions.Count > 0 && Sessions[0].IsLive) ? 1 : 0;
+                    Sessions.Insert(insertIndex, entry);
+                    // Always snap selection back to the sentinel so the live view is the default home.
+                    _setSelectedHistoryItem(LiveItem);
                 }
                 UpdateStatusBarText();
             });
@@ -676,13 +777,19 @@ internal sealed class MainWindowViewModel : ObservableObject
 
     /// <summary>
     /// Reloads the history list from the database (must be called on the UI thread).
-    /// When both <paramref name="preserveSessionId"/> and <paramref name="selectFirst"/>
-    /// are unspecified the format panel is not modified.
+    /// Always pins the <see cref="LiveItem"/> sentinel at index 0.  Selection rules:
+    /// <list type="bullet">
+    ///   <item><paramref name="preserveSessionId"/> wins when supplied; resolves to
+    ///         <see cref="LiveItem"/> for <see cref="HistoryItem.LiveSessionId"/>.</item>
+    ///   <item><paramref name="selectLive"/> selects the sentinel.</item>
+    ///   <item>Otherwise (or when the requested item no longer exists), falls back to
+    ///         the sentinel so the format panel always has a live target.</item>
+    /// </list>
     /// </summary>
     internal void LoadHistoryFromDatabase(
         string? filter            = null,
         long?   preserveSessionId = null,
-        bool    selectFirst       = false)
+        bool    selectLive        = false)
     {
         try
         {
@@ -704,22 +811,29 @@ internal sealed class MainWindowViewModel : ObservableObject
                 });
             }
 
+            // Pin the [Live Clipboard] sentinel at the top of the list.  Survives filter,
+            // clear-all, trim, delete — it's re-inserted on every reload.
+            Sessions.Insert(0, LiveItem);
+
             // Determine which item to (re)select after the reload.
             HistoryItem? toSelect = null;
             if (preserveSessionId.HasValue)
-                toSelect = Sessions.FirstOrDefault(h => h.SessionId == preserveSessionId.Value);
-            else if (selectFirst && Sessions.Count > 0)
-                toSelect = Sessions[0];
+            {
+                toSelect = preserveSessionId.Value == HistoryItem.LiveSessionId
+                    ? LiveItem
+                    : Sessions.FirstOrDefault(h => h.SessionId == preserveSessionId.Value);
+            }
+            else if (selectLive)
+            {
+                toSelect = LiveItem;
+            }
 
-            // When a selection was requested but no qualifying item exists (filter
-            // removed the previously selected session, or the database is empty),
-            // explicitly clear the format panel so it does not show stale history data.
-            if (toSelect == null && (preserveSessionId.HasValue || selectFirst))
-                _clearFormatPanelToEmpty();
+            // Fall back to the sentinel so the format panel never goes blank.
+            toSelect ??= LiveItem;
 
             _setSelectedHistoryItem(toSelect);  // also scrolls into view in MainWindow
 
-            UpdateHistoryCountText(Sessions.Count, filter);
+            UpdateHistoryCountText(Sessions.Count - 1, filter);  // exclude sentinel
         }
         catch
         {

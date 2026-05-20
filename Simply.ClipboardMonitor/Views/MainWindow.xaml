@@ -235,6 +235,25 @@
                               ContextMenuOpening="HistoryContextMenu_Opening"
                               ScrollViewer.HorizontalScrollBarVisibility="Auto"
                               ScrollViewer.VerticalScrollBarVisibility="Auto">
+                            <!-- Visual differentiation for the [Live Clipboard] sentinel row.
+                                 Colours come from SystemColors so the app automatically follows
+                                 the Windows light/dark preference without a custom theme system. -->
+                            <ListView.ItemContainerStyle>
+                                <!-- The default ControlTemplate (with its built-in selection and
+                                     hover triggers) is still applied automatically via the theme
+                                     DefaultStyleKey lookup; we only layer our own triggers on top. -->
+                                <Style TargetType="ListViewItem">
+                                    <Style.Triggers>
+                                        <!-- Hairline separator below the [Live Clipboard] sentinel,
+                                             fencing it off from the real history rows.  Colour comes
+                                             from SystemColors so it follows light/dark mode. -->
+                                        <DataTrigger Binding="{Binding IsLive}" Value="True">
+                                            <Setter Property="BorderBrush"     Value="{DynamicResource {x:Static SystemColors.ControlDarkBrushKey}}" />
+                                            <Setter Property="BorderThickness" Value="0,0,0,1" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </ListView.ItemContainerStyle>
                             <ListView.ContextMenu>
                                 <ContextMenu>
                                     <MenuItem x:Name="HistoryMenuLoadIntoClipboard"
@@ -253,8 +272,34 @@
                             </ListView.ContextMenu>
                         <ListView.View>
                             <GridView>
-                                <GridViewColumn Header="Date" Width="120"
-                                                DisplayMemberBinding="{Binding DateText}" />
+                                <GridViewColumn Header="Date" Width="120">
+                                    <GridViewColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <!-- For real entries: plain DateText.
+                                                 For the [Live Clipboard] sentinel: a coloured status
+                                                 dot prefix "● " followed by "Live".  The dot uses
+                                                 SystemColors.HotTrackBrushKey so it follows the
+                                                 Windows accent / light-dark preference. -->
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="●  "
+                                                           Foreground="{DynamicResource {x:Static SystemColors.HotTrackBrushKey}}"
+                                                           VerticalAlignment="Center">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Setter Property="Visibility" Value="Collapsed" />
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding IsLive}" Value="True">
+                                                                    <Setter Property="Visibility" Value="Visible" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
+                                                <TextBlock Text="{Binding DateText}" VerticalAlignment="Center" />
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </GridViewColumn.CellTemplate>
+                                </GridViewColumn>
                                 <GridViewColumn Width="106">
                                     <GridViewColumn.Header>
                                         <GridViewColumnHeader Content="Formats" />
@@ -289,7 +334,7 @@
                                                     </ItemsControl.ItemTemplate>
                                                 </ItemsControl>
                                                 <TextBlock Text="Empty clipboard"
-                                                           Foreground="DimGray"
+                                                           Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"
                                                            FontStyle="Italic"
                                                            FontSize="11"
                                                            VerticalAlignment="Center">
